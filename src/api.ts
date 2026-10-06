@@ -585,8 +585,6 @@ function unsubscribePage(input: { title: string; description: string; complete: 
     *{box-sizing:border-box}
     body{min-height:100vh;min-height:100dvh;margin:0;padding:24px;display:grid;place-items:center;background:radial-gradient(circle at 50% 15%,#111520 0,#07090e 34%,#050609 72%);color:#f4f5f7}
     .shell{width:min(760px,100%)}
-    .brand{display:flex;align-items:center;justify-content:center;gap:10px;margin:0 0 22px;color:#c5c8cf;font-size:14px;font-weight:650;letter-spacing:.01em}
-    .mark{display:grid;place-items:center;width:30px;height:30px;border:1px solid #754a9e;border-radius:9px;background:linear-gradient(145deg,#6d38ae,#362054);color:#fff;font-size:11px}
     .card{overflow:hidden;border:1px solid #272b33;border-radius:24px;background:#0b0d12;box-shadow:0 28px 90px #0009}
     .content{padding:58px 64px 50px;text-align:center}
     .icon{display:grid;place-items:center;width:88px;height:88px;margin:0 auto 30px;border:1px solid #dce0e8;border-radius:50%;background:#f5f6f8;color:#20242c;font-size:34px;font-weight:650;box-shadow:0 12px 30px #0005}
@@ -599,14 +597,11 @@ function unsubscribePage(input: { title: string; description: string; complete: 
     button:hover{border-color:#737b88;background:#4a515d}
     button:active{transform:translateY(1px)}
     button:focus-visible{outline:2px solid #8ab4ff;outline-offset:3px}
-    footer{display:flex;align-items:center;justify-content:center;gap:9px;padding:17px 24px;border-top:1px solid #1d2027;color:#767c87;font-size:13px}
-    .footer-mark{display:grid;place-items:center;width:24px;height:24px;border:1px solid #343842;border-radius:50%;color:#b7bbc4;font-size:10px;font-weight:750}
-    @media(max-width:560px){body{padding:16px}.brand{margin-bottom:16px}.card{border-radius:19px}.content{padding:40px 22px 36px}.icon{width:72px;height:72px;margin-bottom:24px;font-size:28px}.eyebrow{margin-bottom:11px}h1{font-size:28px}.description{font-size:15px}form{margin-top:27px}footer{padding:15px 18px}}
+    @media(max-width:560px){body{padding:16px}.card{border-radius:19px}.content{padding:40px 22px 36px}.icon{width:72px;height:72px;margin-bottom:24px;font-size:28px}.eyebrow{margin-bottom:11px}h1{font-size:28px}.description{font-size:15px}form{margin-top:27px}}
   </style>
 </head>
 <body>
   <main class="shell">
-    <div class="brand"><span class="mark">CF</span><span>Cloudflare Mail</span></div>
     <section class="card ${input.state}">
       <div class="content">
         <div class="icon" aria-hidden="true">${icon}</div>
@@ -615,7 +610,6 @@ function unsubscribePage(input: { title: string; description: string; complete: 
         <p class="description">${escapeHtml(input.description)}</p>
         ${input.complete ? "" : '<form method="post"><button type="submit">Unsubscribe</button></form>'}
       </div>
-      <footer><span>Powered by</span><span class="footer-mark">CF</span><span>Cloudflare Mail</span></footer>
     </section>
   </main>
 </body>
