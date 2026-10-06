@@ -224,11 +224,19 @@ describe("Resend-compatible API", () => {
 
     const page = await SELF.fetch(`https://api.example.com/unsubscribe/${token}`);
     expect(page.status).toBe(200);
+    const pageHtml = await page.text();
+    expect(pageHtml).toContain("Do you want to unsubscribe from News?");
+    expect(pageHtml).toContain("Confirm the email preferences for person@example.net.");
+    expect(pageHtml).toContain('<button type="submit">Unsubscribe</button>');
+    expect(pageHtml).toContain("Powered by");
     const before = await env.DB.prepare("SELECT status FROM segment_contacts WHERE segment_id = 's1' AND contact_id = 'c1'").first<{ status: string }>();
     expect(before?.status).toBe("subscribed");
 
     const posted = await SELF.fetch(`https://api.example.com/unsubscribe/${token}`, { method: "POST", body: "List-Unsubscribe=One-Click" });
     expect(posted.status).toBe(200);
+    const postedHtml = await posted.text();
+    expect(postedHtml).toContain("You’re unsubscribed from News");
+    expect(postedHtml).not.toContain('<button type="submit">Unsubscribe</button>');
     const after = await env.DB.prepare("SELECT status FROM segment_contacts WHERE segment_id = 's1' AND contact_id = 'c1'").first<{ status: string }>();
     expect(after?.status).toBe("unsubscribed");
   });

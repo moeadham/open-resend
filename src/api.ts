@@ -28,21 +28,46 @@ apiApp.onError((error) => appErrorResponse(error));
 apiApp.notFound(() => Response.json({ name: "not_found", message: "Route not found.", statusCode: 404 }, { status: 404 }));
 
 apiApp.get("/unsubscribe/:token", async (c) => {
-  if (c.req.param("token") === "test") return c.html(unsubscribePage("Email preview", true));
+  if (c.req.param("token") === "test") return c.html(unsubscribePage({
+    title: "Do you want to unsubscribe from this mailing list?",
+    description: "This is a preview of the unsubscribe page. Test emails do not change subscription preferences.",
+    complete: true,
+    state: "preview",
+  }));
   const membership = await findMembershipByToken(c.env.DB, c.req.param("token"));
-  if (!membership) return c.html(unsubscribePage("This unsubscribe link is invalid.", true), 404);
-  return c.html(unsubscribePage(`Unsubscribe ${membership.email} from ${membership.segment_name}?`, false));
+  if (!membership) return c.html(unsubscribePage({
+    title: "This unsubscribe link is no longer available",
+    description: "The link may be invalid or expired. No email preferences were changed.",
+    complete: true,
+    state: "error",
+  }), 404);
+  return c.html(unsubscribePage({
+    title: `Do you want to unsubscribe from ${membership.segment_name}?`,
+    description: `Confirm the email preferences for ${membership.email}.`,
+    complete: false,
+    state: "confirm",
+  }));
 });
 
 apiApp.post("/unsubscribe/:token", async (c) => {
   const membership = await findMembershipByToken(c.env.DB, c.req.param("token"));
-  if (!membership) return c.html(unsubscribePage("This unsubscribe link is invalid.", true), 404);
+  if (!membership) return c.html(unsubscribePage({
+    title: "This unsubscribe link is no longer available",
+    description: "The link may be invalid or expired. No email preferences were changed.",
+    complete: true,
+    state: "error",
+  }), 404);
   const now = nowIso();
   await c.env.DB.prepare(
     `UPDATE segment_contacts SET status = 'unsubscribed', unsubscribed_at = COALESCE(unsubscribed_at, ?), updated_at = ?
      WHERE segment_id = ? AND contact_id = ?`,
   ).bind(now, now, membership.segment_id, membership.contact_id).run();
-  return c.html(unsubscribePage(`You have been unsubscribed from ${membership.segment_name}.`, true));
+  return c.html(unsubscribePage({
+    title: `You’re unsubscribed from ${membership.segment_name}`,
+    description: `You will no longer receive emails sent to this mailing list at ${membership.email}.`,
+    complete: true,
+    state: "success",
+  }));
 });
 
 apiApp.use("*", requireApiKey);
@@ -537,6 +562,54 @@ async function findMembershipByToken(db: D1Database, token: string): Promise<{
   ).bind(hash).first();
 }
 
-function unsubscribePage(message: string, complete: boolean): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Unsubscribe</title><style>body{font:16px system-ui;max-width:560px;margin:80px auto;padding:24px;color:#172033}button{padding:10px 16px;border:0;border-radius:7px;background:#172033;color:white}</style></head><body><h1>Manage subscription</h1><p>${escapeHtml(message)}</p>${complete ? "" : '<form method="post"><button type="submit">Unsubscribe</button></form>'}</body></html>`;
+function unsubscribePage(input: { title: string; description: string; complete: boolean; state: "confirm" | "success" | "error" | "preview" }): string {
+  const icon = input.state === "success" ? "✓" : input.state === "error" ? "!" : "↓";
+  const label = input.state === "preview" ? "Preview" : input.state === "error" ? "Link unavailable" : input.state === "success" ? "Preferences updated" : "Email preferences";
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Manage email preferences</title>
+  <style>
+    :root{font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#f4f5f7;background:#050609;color-scheme:dark}
+    *{box-sizing:border-box}
+    body{min-height:100vh;min-height:100dvh;margin:0;padding:24px;display:grid;place-items:center;background:radial-gradient(circle at 50% 15%,#111520 0,#07090e 34%,#050609 72%);color:#f4f5f7}
+    .shell{width:min(760px,100%)}
+    .brand{display:flex;align-items:center;justify-content:center;gap:10px;margin:0 0 22px;color:#c5c8cf;font-size:14px;font-weight:650;letter-spacing:.01em}
+    .mark{display:grid;place-items:center;width:30px;height:30px;border:1px solid #754a9e;border-radius:9px;background:linear-gradient(145deg,#6d38ae,#362054);color:#fff;font-size:11px}
+    .card{overflow:hidden;border:1px solid #272b33;border-radius:24px;background:#0b0d12;box-shadow:0 28px 90px #0009}
+    .content{padding:58px 64px 50px;text-align:center}
+    .icon{display:grid;place-items:center;width:88px;height:88px;margin:0 auto 30px;border:1px solid #dce0e8;border-radius:50%;background:#f5f6f8;color:#20242c;font-size:34px;font-weight:650;box-shadow:0 12px 30px #0005}
+    .error .icon{border-color:#5e2929;background:#2b1416;color:#ff9d9d}
+    .eyebrow{margin:0 0 14px;color:#858b96;font-size:12px;font-weight:650;letter-spacing:.11em;text-transform:uppercase}
+    h1{max-width:650px;margin:0 auto;color:#f5f6f8;font-size:clamp(28px,5vw,40px);line-height:1.13;letter-spacing:-.035em}
+    .description{max-width:560px;margin:16px auto 0;color:#9399a5;font-size:17px;line-height:1.6}
+    form{max-width:520px;margin:34px auto 0}
+    button{width:100%;min-height:50px;border:1px solid #555c68;border-radius:11px;background:#3b414c;color:#fff;font:inherit;font-weight:650;cursor:pointer;transition:background .15s ease,border-color .15s ease,transform .15s ease}
+    button:hover{border-color:#737b88;background:#4a515d}
+    button:active{transform:translateY(1px)}
+    button:focus-visible{outline:2px solid #8ab4ff;outline-offset:3px}
+    footer{display:flex;align-items:center;justify-content:center;gap:9px;padding:17px 24px;border-top:1px solid #1d2027;color:#767c87;font-size:13px}
+    .footer-mark{display:grid;place-items:center;width:24px;height:24px;border:1px solid #343842;border-radius:50%;color:#b7bbc4;font-size:10px;font-weight:750}
+    @media(max-width:560px){body{padding:16px}.brand{margin-bottom:16px}.card{border-radius:19px}.content{padding:40px 22px 36px}.icon{width:72px;height:72px;margin-bottom:24px;font-size:28px}.eyebrow{margin-bottom:11px}h1{font-size:28px}.description{font-size:15px}form{margin-top:27px}footer{padding:15px 18px}}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="brand"><span class="mark">CF</span><span>Cloudflare Mail</span></div>
+    <section class="card ${input.state}">
+      <div class="content">
+        <div class="icon" aria-hidden="true">${icon}</div>
+        <p class="eyebrow">${label}</p>
+        <h1>${escapeHtml(input.title)}</h1>
+        <p class="description">${escapeHtml(input.description)}</p>
+        ${input.complete ? "" : '<form method="post"><button type="submit">Unsubscribe</button></form>'}
+      </div>
+      <footer><span>Powered by</span><span class="footer-mark">CF</span><span>Cloudflare Mail</span></footer>
+    </section>
+  </main>
+</body>
+</html>`;
 }
