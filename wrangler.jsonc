@@ -4,6 +4,10 @@
   "main": "src/index.tsx",
   "compatibility_date": "2026-10-06",
   "compatibility_flags": ["nodejs_compat"],
+  "routes": [
+    { "pattern": "cloudflare-mail.moeadham.com", "custom_domain": true },
+    { "pattern": "cloudflare-mail-api.moeadham.com", "custom_domain": true }
+  ],
   "assets": {
     "directory": "./dist-assets",
     "binding": "ASSETS",
@@ -13,7 +17,7 @@
     {
       "binding": "DB",
       "database_name": "cloudflare-resend",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "90ee7cb9-d83c-4fa1-b0eb-f114094188a9",
       "migrations_dir": "./migrations"
     }
   ],
@@ -55,12 +59,12 @@
     { "name": "EMAIL" }
   ],
   "vars": {
-    "ADMIN_HOSTNAME": "admin.example.com",
-    "API_HOSTNAME": "api.example.com",
-    "PUBLIC_BASE_URL": "https://api.example.com",
-    "ACCESS_TEAM_DOMAIN": "example.cloudflareaccess.com",
-    "ACCESS_AUD": "replace-with-access-application-aud",
-    "ENVIRONMENT": "production",
+    "ADMIN_HOSTNAME": "cloudflare-mail.moeadham.com",
+    "API_HOSTNAME": "cloudflare-mail-api.moeadham.com",
+    "PUBLIC_BASE_URL": "https://cloudflare-mail-api.moeadham.com",
+    "ACCESS_TEAM_DOMAIN": "icy-snowflake-2daa.cloudflareaccess.com",
+    "ACCESS_AUD": "a9b6e289a8ea2fd5489f3c1f64f1bdb08b4a17ae4da4c096f27b7d375b2a5e0d",
+    "ENVIRONMENT": "staging",
     "ALLOW_LOCAL_ADMIN": "false"
   },
   "observability": {
