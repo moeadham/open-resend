@@ -15,7 +15,6 @@ const accessAud = output(terraformOutputs, "access_aud");
 const accessTeamDomain = output(terraformOutputs, "access_team_domain");
 const apiHostname = requireHostname(deployment.apiHostname, "apiHostname");
 const unsubscribeHostnames = requireHostnameMap(deployment.unsubscribeHostnames, "unsubscribeHostnames");
-const sendingDomains = discoverSendingDomains();
 requireHostname(adminHostname, "Terraform output admin_hostname");
 
 for (const hostname of Object.values(unsubscribeHostnames)) {
@@ -62,7 +61,6 @@ const config = {
     ADMIN_HOSTNAME: adminHostname,
     API_HOSTNAME: apiHostname,
     UNSUBSCRIBE_HOSTNAMES: JSON.stringify(unsubscribeHostnames),
-    SENDING_DOMAINS: JSON.stringify(sendingDomains),
     ACCESS_TEAM_DOMAIN: accessTeamDomain,
     ACCESS_AUD: accessAud,
     ENVIRONMENT: optionalString(deployment.environment, "production"),
@@ -91,43 +89,6 @@ function readTerraformOutputs() {
     }
     fail("Could not read Terraform outputs. Run terraform -chdir=infra/access apply first.");
   }
-}
-
-function discoverSendingDomains() {
-  const fixture = process.env.SENDING_DOMAINS_JSON;
-  if (fixture) {
-    try {
-      const domains = JSON.parse(fixture);
-      if (!Array.isArray(domains)) throw new Error("not an array");
-      return normalizeSendingDomains(domains);
-    } catch {
-      fail("SENDING_DOMAINS_JSON must be a JSON array of hostnames.");
-    }
-  }
-
-  try {
-    const output = execFileSync(process.execPath, [resolve(root, "node_modules/wrangler/bin/wrangler.js"), "email", "sending", "list"], {
-      cwd: root,
-      encoding: "utf8",
-      env: { ...process.env, NO_COLOR: "1" },
-      stdio: ["ignore", "pipe", "inherit"],
-    });
-    const domains = [];
-    for (const line of output.split(/\r?\n/)) {
-      if (!line.includes("│")) continue;
-      const columns = line.split("│").slice(1, -1).map((value) => value.trim());
-      if (columns.length >= 3 && columns[0] !== "zone" && columns[2] === "yes") domains.push(columns[1]);
-    }
-    return normalizeSendingDomains(domains);
-  } catch {
-    fail("Could not discover Cloudflare Email Sending domains. Run `npx wrangler email sending list` and confirm Wrangler is authenticated.");
-  }
-}
-
-function normalizeSendingDomains(values) {
-  const domains = [...new Set(values.map((value) => requireHostname(value, "Email Sending domain")))].sort();
-  if (!domains.length) fail("No enabled Cloudflare Email Sending domains were found for this account.");
-  return domains;
 }
 
 function output(outputs, name) {
