@@ -17,7 +17,7 @@ import {
   safeJsonObject,
   sha256,
 } from "./lib";
-import type { BroadcastRow, ContactRow, SegmentRow, SenderRow } from "./types";
+import type { BroadcastRow, ContactRow, SegmentRow, SenderRow, TopicRow } from "./types";
 
 type Bindings = { Bindings: Env };
 type JsonObject = Record<string, unknown>;
@@ -42,37 +42,74 @@ apiApp.get("/unsubscribe/:token", async (c) => {
     complete: true,
     state: "preview",
   }));
-  const membership = await findMembershipByToken(c.env.DB, c.req.param("token"));
-  if (!membership) return c.html(unsubscribePage({
+  const context = await findUnsubscribeContext(c.env.DB, c.req.param("token"));
+  if (!context) return c.html(unsubscribePage({
     title: "This unsubscribe link is no longer available",
     description: "The link may be invalid or expired. No email preferences were changed.",
     complete: true,
     state: "error",
   }), 404);
-  return c.html(unsubscribePage({
-    title: `Do you want to unsubscribe from ${membership.segment_name}?`,
-    description: `Confirm the email preferences for ${membership.email}.`,
+  if (!context.topic_id) return c.html(unsubscribePage({
+    title: "Unsubscribe from all emails?",
+    description: `This will stop all broadcasts sent to ${context.email}.`,
     complete: false,
     state: "confirm",
+    actions: '<form method="post"><input type="hidden" name="unsubscribe_all" value="1"><button type="submit">Unsubscribe from all</button></form>',
+  }));
+  const topics = await preferenceTopics(c.env.DB, context.contact_id, context.topic_id);
+  return c.html(unsubscribePage({
+    title: "Manage your email preferences",
+    description: `Choose which emails ${context.email} should receive.`,
+    complete: false,
+    state: "confirm",
+    actions: topicPreferenceForms(topics),
   }));
 });
 
 apiApp.post("/unsubscribe/:token", async (c) => {
-  const membership = await findMembershipByToken(c.env.DB, c.req.param("token"));
-  if (!membership) return c.html(unsubscribePage({
+  const context = await findUnsubscribeContext(c.env.DB, c.req.param("token"));
+  if (!context) return c.html(unsubscribePage({
     title: "This unsubscribe link is no longer available",
     description: "The link may be invalid or expired. No email preferences were changed.",
     complete: true,
     state: "error",
   }), 404);
+  const contentType = c.req.header("content-type") ?? "";
+  const form = contentType.includes("application/x-www-form-urlencoded") || contentType.includes("multipart/form-data")
+    ? await c.req.raw.formData()
+    : new FormData();
   const now = nowIso();
-  await c.env.DB.prepare(
-    `UPDATE segment_contacts SET status = 'unsubscribed', unsubscribed_at = COALESCE(unsubscribed_at, ?), updated_at = ?
-     WHERE segment_id = ? AND contact_id = ?`,
-  ).bind(now, now, membership.segment_id, membership.contact_id).run();
+  if (context.topic_id && form.get("preference_form") === "1") {
+    const visible = await preferenceTopics(c.env.DB, context.contact_id, context.topic_id);
+    const selected = new Set(form.getAll("topic").map(String));
+    await c.env.DB.batch(visible.map((topic) => c.env.DB.prepare(
+      `INSERT INTO contact_topics (topic_id,contact_id,subscription,updated_at) VALUES (?,?,?,?)
+       ON CONFLICT(topic_id,contact_id) DO UPDATE SET subscription=excluded.subscription,updated_at=excluded.updated_at`,
+    ).bind(topic.id, context.contact_id, selected.has(topic.id) ? "opt_in" : "opt_out", now)));
+    return c.html(unsubscribePage({
+      title: "Your preferences were updated",
+      description: `Your email choices for ${context.email} have been saved.`,
+      complete: true,
+      state: "success",
+    }));
+  }
+  if (context.topic_id && form.get("unsubscribe_all") !== "1") {
+    await c.env.DB.prepare(
+      `INSERT INTO contact_topics (topic_id,contact_id,subscription,updated_at) VALUES (?,?,'opt_out',?)
+       ON CONFLICT(topic_id,contact_id) DO UPDATE SET subscription='opt_out',updated_at=excluded.updated_at`,
+    ).bind(context.topic_id, context.contact_id, now).run();
+    return c.html(unsubscribePage({
+      title: `You’re unsubscribed from ${context.topic_name}`,
+      description: `You will no longer receive this type of email at ${context.email}.`,
+      complete: true,
+      state: "success",
+    }));
+  }
+  await c.env.DB.prepare("UPDATE contacts SET unsubscribed=1,updated_at=? WHERE id=?")
+    .bind(now, context.contact_id).run();
   return c.html(unsubscribePage({
-    title: `You’re unsubscribed from ${membership.segment_name}`,
-    description: `You will no longer receive emails sent to this mailing list at ${membership.email}.`,
+    title: "You’re unsubscribed from all emails",
+    description: `No more broadcasts will be sent to ${context.email}.`,
     complete: true,
     state: "success",
   }));
@@ -132,6 +169,54 @@ apiApp.delete("/segments/:id", async (c) => {
   return c.json({ object: "segment", id: c.req.param("id"), deleted: true });
 });
 
+apiApp.post("/topics", async (c) => {
+  const body = await jsonBody(c.req.raw);
+  const name = requiredString(body.name, "name", 50);
+  const description = optionalString(body.description, "description", 200);
+  const defaultSubscription = subscriptionValue(body.default_subscription, "default_subscription");
+  const visibility = visibilityValue(body.visibility ?? "private");
+  const id = crypto.randomUUID();
+  const now = nowIso();
+  try {
+    await c.env.DB.prepare(
+      "INSERT INTO topics (id,name,description,default_subscription,visibility,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
+    ).bind(id, name, description, defaultSubscription, visibility, now, now).run();
+  } catch (error) {
+    if (isUniqueError(error)) throw new AppError(409, "conflict", "A topic with this name already exists.");
+    throw error;
+  }
+  return c.json({ id });
+});
+
+apiApp.get("/topics", async (c) => {
+  const rows = await listRows<TopicRow>(c.env.DB, "topics", pagination(c.req.query()));
+  return c.json({ object: "list", data: rows.items.map(topicResponse), has_more: rows.hasMore });
+});
+
+apiApp.get("/topics/:id", async (c) => c.json(topicResponse(await getTopic(c.env.DB, c.req.param("id")))));
+
+apiApp.patch("/topics/:id", async (c) => {
+  const topic = await getTopic(c.env.DB, c.req.param("id"));
+  const body = await jsonBody(c.req.raw);
+  const name = body.name === undefined ? topic.name : requiredString(body.name, "name", 50);
+  const description = body.description === undefined ? topic.description : optionalString(body.description, "description", 200);
+  const visibility = body.visibility === undefined ? topic.visibility : visibilityValue(body.visibility);
+  try {
+    await c.env.DB.prepare("UPDATE topics SET name=?,description=?,visibility=?,updated_at=? WHERE id=?")
+      .bind(name, description, visibility, nowIso(), topic.id).run();
+  } catch (error) {
+    if (isUniqueError(error)) throw new AppError(409, "conflict", "A topic with this name already exists.");
+    throw error;
+  }
+  return c.json({ id: topic.id });
+});
+
+apiApp.delete("/topics/:id", async (c) => {
+  const topic = await getTopic(c.env.DB, c.req.param("id"));
+  await c.env.DB.prepare("DELETE FROM topics WHERE id=?").bind(topic.id).run();
+  return c.json({ object: "topic", id: topic.id, deleted: true });
+});
+
 apiApp.post("/contacts", async (c) => {
   const body = await jsonBody(c.req.raw);
   const email = normalizeEmail(requiredString(body.email, "email", 320));
@@ -140,6 +225,7 @@ apiApp.post("/contacts", async (c) => {
   const now = nowIso();
   const properties = safeJsonObject(body.properties);
   const segments = Array.isArray(body.segments) ? body.segments : [];
+  const topics = Array.isArray(body.topics) ? body.topics : [];
   const statements: D1PreparedStatement[] = [
     c.env.DB.prepare(
       `INSERT INTO contacts (id, email, first_name, last_name, properties_json, unsubscribed, created_at, updated_at)
@@ -164,6 +250,15 @@ apiApp.post("/contacts", async (c) => {
       `INSERT INTO segment_contacts (segment_id, contact_id, status, subscribed_at, updated_at)
        VALUES (?, ?, 'subscribed', ?, ?)`,
     ).bind(item.id, id, now, now));
+  }
+  for (const item of topics) {
+    if (!item || typeof item !== "object" || !("id" in item) || typeof item.id !== "string" || !("subscription" in item)) {
+      throw new AppError(422, "validation_error", "topics must contain an id and subscription.");
+    }
+    await getTopic(c.env.DB, item.id);
+    statements.push(c.env.DB.prepare(
+      "INSERT INTO contact_topics (topic_id,contact_id,subscription,updated_at) VALUES (?,?,?,?)",
+    ).bind(item.id, id, subscriptionValue(item.subscription, "subscription"), now));
   }
   try {
     await c.env.DB.batch(statements);
@@ -262,6 +357,36 @@ apiApp.delete("/contacts/:identifier/segments/:segmentId", async (c) => {
   return c.json({ id: contact.id, audienceId: c.req.param("segmentId"), deleted: true });
 });
 
+apiApp.get("/contacts/:identifier/topics", async (c) => {
+  const contact = await getContact(c.env.DB, c.req.param("identifier"));
+  const result = await c.env.DB.prepare(
+    `SELECT t.id,t.name,t.description,COALESCE(ct.subscription,t.default_subscription) AS subscription
+     FROM topics t LEFT JOIN contact_topics ct ON ct.topic_id=t.id AND ct.contact_id=?
+     ORDER BY t.created_at DESC,t.id DESC`,
+  ).bind(contact.id).all<{ id: string; name: string; description: string | null; subscription: "opt_in" | "opt_out" }>();
+  return c.json({ object: "list", data: result.results, has_more: false });
+});
+
+apiApp.patch("/contacts/:identifier/topics", async (c) => {
+  const contact = await getContact(c.env.DB, c.req.param("identifier"));
+  const body = await c.req.raw.json<unknown>();
+  if (!Array.isArray(body)) throw new AppError(422, "validation_error", "Request body must be an array of topic preferences.");
+  const now = nowIso();
+  const statements: D1PreparedStatement[] = [];
+  for (const item of body) {
+    if (!item || typeof item !== "object" || !("id" in item) || typeof item.id !== "string" || !("subscription" in item)) {
+      throw new AppError(422, "validation_error", "Each topic preference requires an id and subscription.");
+    }
+    await getTopic(c.env.DB, item.id);
+    statements.push(c.env.DB.prepare(
+      `INSERT INTO contact_topics (topic_id,contact_id,subscription,updated_at) VALUES (?,?,?,?)
+       ON CONFLICT(topic_id,contact_id) DO UPDATE SET subscription=excluded.subscription,updated_at=excluded.updated_at`,
+    ).bind(item.id, contact.id, subscriptionValue(item.subscription, "subscription"), now));
+  }
+  if (statements.length) await c.env.DB.batch(statements);
+  return c.json({ id: contact.id });
+});
+
 apiApp.post("/broadcasts", async (c) => {
   const body = await jsonBody(c.req.raw);
   const prepared = await prepareBroadcast(c.env.DB, body);
@@ -269,10 +394,10 @@ apiApp.post("/broadcasts", async (c) => {
   const now = nowIso();
   await c.env.DB.prepare(
     `INSERT INTO broadcasts
-       (id, name, segment_id, sender_id, from_value, subject, reply_to_json, preview_text, html, text, status, scheduled_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, name, segment_id, topic_id, sender_id, from_value, subject, reply_to_json, preview_text, html, text, status, scheduled_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
-    id, prepared.name, prepared.segmentId, prepared.sender.id, prepared.fromValue, prepared.subject,
+    id, prepared.name, prepared.segmentId, prepared.topicId, prepared.sender.id, prepared.fromValue, prepared.subject,
     prepared.replyTo, prepared.previewText, prepared.html, prepared.text,
     prepared.scheduledAt ? "scheduled" : "draft", prepared.scheduledAt, now, now,
   ).run();
@@ -292,7 +417,7 @@ apiApp.get("/broadcasts", async (c) => {
     data: rows.items.map((row) => {
       const full = broadcastResponse(row);
       return Object.fromEntries(Object.entries(full).filter(([key]) =>
-        ["id", "name", "audience_id", "segment_id", "status", "created_at", "scheduled_at", "sent_at"].includes(key),
+        ["id", "name", "audience_id", "segment_id", "topic_id", "status", "created_at", "scheduled_at", "sent_at"].includes(key),
       ));
     }),
   });
@@ -307,6 +432,7 @@ apiApp.patch("/broadcasts/:id", async (c) => {
   const merged: JsonObject = {
     name: body.name ?? existing.name,
     segment_id: body.segment_id ?? existing.segment_id,
+    topic_id: body.topic_id === undefined ? existing.topic_id : body.topic_id,
     from: body.from ?? existing.from_value,
     subject: body.subject ?? existing.subject,
     reply_to: body.reply_to ?? (existing.reply_to_json ? JSON.parse(existing.reply_to_json) : undefined),
@@ -316,10 +442,10 @@ apiApp.patch("/broadcasts/:id", async (c) => {
   };
   const prepared = await prepareBroadcast(c.env.DB, merged);
   await c.env.DB.prepare(
-    `UPDATE broadcasts SET name = ?, segment_id = ?, sender_id = ?, from_value = ?, subject = ?, reply_to_json = ?,
+    `UPDATE broadcasts SET name = ?, segment_id = ?, topic_id = ?, sender_id = ?, from_value = ?, subject = ?, reply_to_json = ?,
       preview_text = ?, html = ?, text = ?, updated_at = ? WHERE id = ?`,
   ).bind(
-    prepared.name, prepared.segmentId, prepared.sender.id, prepared.fromValue, prepared.subject, prepared.replyTo,
+    prepared.name, prepared.segmentId, prepared.topicId, prepared.sender.id, prepared.fromValue, prepared.subject, prepared.replyTo,
     prepared.previewText, prepared.html, prepared.text, nowIso(), existing.id,
   ).run();
   return c.json({ id: existing.id });
@@ -365,6 +491,7 @@ apiApp.delete("/broadcasts/:id", async (c) => {
 async function prepareBroadcast(db: D1Database, body: JsonObject): Promise<{
   name: string;
   segmentId: string;
+  topicId: string | null;
   sender: SenderRow;
   fromValue: string;
   subject: string;
@@ -376,6 +503,10 @@ async function prepareBroadcast(db: D1Database, body: JsonObject): Promise<{
 }> {
   const segmentId = requiredString(body.segment_id, "segment_id", 100);
   await getSegment(db, segmentId);
+  const topicId = body.topic_id === undefined || body.topic_id === null || body.topic_id === ""
+    ? null
+    : requiredString(body.topic_id, "topic_id", 100);
+  if (topicId) await getTopic(db, topicId);
   const fromValue = requiredString(body.from, "from", 500);
   const from = parseFrom(fromValue);
   if (!isEmail(from.email)) throw new AppError(422, "validation_error", "from is invalid.");
@@ -400,6 +531,7 @@ async function prepareBroadcast(db: D1Database, body: JsonObject): Promise<{
   return {
     name: optionalString(body.name, "name", 200) ?? requiredString(body.subject, "subject", 998),
     segmentId,
+    topicId,
     sender,
     fromValue,
     subject: requiredString(body.subject, "subject", 998),
@@ -414,6 +546,12 @@ async function prepareBroadcast(db: D1Database, body: JsonObject): Promise<{
 async function getSegment(db: D1Database, id: string): Promise<SegmentRow> {
   const row = await db.prepare("SELECT * FROM segments WHERE id = ?").bind(id).first<SegmentRow>();
   if (!row) throw new AppError(404, "not_found", "Segment not found.");
+  return row;
+}
+
+async function getTopic(db: D1Database, id: string): Promise<TopicRow> {
+  const row = await db.prepare("SELECT * FROM topics WHERE id = ?").bind(id).first<TopicRow>();
+  if (!row) throw new AppError(404, "not_found", "Topic not found.");
   return row;
 }
 
@@ -435,6 +573,30 @@ function segmentResponse(row: SegmentRow): Record<string, unknown> {
   return { id: row.id, name: row.name, created_at: row.created_at };
 }
 
+function topicResponse(row: TopicRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    default_subscription: row.default_subscription,
+    created_at: row.created_at,
+  };
+}
+
+function subscriptionValue(value: unknown, field: string): "opt_in" | "opt_out" {
+  if (value !== "opt_in" && value !== "opt_out") {
+    throw new AppError(422, "validation_error", `${field} must be opt_in or opt_out.`);
+  }
+  return value;
+}
+
+function visibilityValue(value: unknown): "public" | "private" {
+  if (value !== "public" && value !== "private") {
+    throw new AppError(422, "validation_error", "visibility must be public or private.");
+  }
+  return value;
+}
+
 type Page = { limit: number; after?: string; before?: string };
 
 function pagination(query: Record<string, string>): Page {
@@ -446,7 +608,7 @@ function pagination(query: Record<string, string>): Page {
   return { limit: rawLimit, ...(query.after ? { after: query.after } : {}), ...(query.before ? { before: query.before } : {}) };
 }
 
-async function listRows<T extends { id: string; created_at: string }>(db: D1Database, table: "segments" | "contacts" | "broadcasts", page: Page): Promise<{ items: T[]; hasMore: boolean }> {
+async function listRows<T extends { id: string; created_at: string }>(db: D1Database, table: "segments" | "topics" | "contacts" | "broadcasts", page: Page): Promise<{ items: T[]; hasMore: boolean }> {
   const cursor = page.after ?? page.before;
   let cursorRow: { id: string; created_at: string } | null = null;
   if (cursor) {
@@ -554,23 +716,45 @@ async function idempotencyMiddleware(c: Context<Bindings>, next: Next): Promise<
   }
 }
 
-async function findMembershipByToken(db: D1Database, token: string): Promise<{
-  segment_id: string;
+async function findUnsubscribeContext(db: D1Database, token: string): Promise<{
   contact_id: string;
   email: string;
-  segment_name: string;
+  topic_id: string | null;
+  topic_name: string | null;
 } | null> {
   const hash = await sha256(token);
   return db.prepare(
-    `SELECT ut.segment_id, ut.contact_id, c.email, s.name AS segment_name
+    `SELECT ut.contact_id, ut.topic_id, c.email, t.name AS topic_name
      FROM unsubscribe_tokens ut
      JOIN contacts c ON c.id = ut.contact_id
-     JOIN segments s ON s.id = ut.segment_id
+     LEFT JOIN topics t ON t.id = ut.topic_id
      WHERE ut.token_hash = ?`,
   ).bind(hash).first();
 }
 
-function unsubscribePage(input: { title: string; description: string; complete: boolean; state: "confirm" | "success" | "error" | "preview" }): string {
+type PreferenceTopic = { id: string; name: string; description: string | null; subscription: "opt_in" | "opt_out" };
+
+async function preferenceTopics(db: D1Database, contactId: string, currentTopicId: string): Promise<PreferenceTopic[]> {
+  const result = await db.prepare(
+    `SELECT t.id,t.name,t.description,COALESCE(ct.subscription,t.default_subscription) AS subscription
+     FROM topics t
+     LEFT JOIN contact_topics ct ON ct.topic_id=t.id AND ct.contact_id=?
+     WHERE t.visibility='public' OR ct.subscription='opt_in' OR t.id=?
+     ORDER BY t.name`,
+  ).bind(contactId, currentTopicId).all<PreferenceTopic>();
+  return result.results;
+}
+
+function topicPreferenceForms(topics: PreferenceTopic[]): string {
+  const choices = topics.map((topic) => `<label class="topic-choice">
+    <span><strong>${escapeHtml(topic.name)}</strong>${topic.description ? `<small>${escapeHtml(topic.description)}</small>` : ""}</span>
+    <input type="checkbox" name="topic" value="${escapeHtml(topic.id)}" ${topic.subscription === "opt_in" ? "checked" : ""}>
+  </label>`).join("");
+  return `<form method="post" class="preferences"><input type="hidden" name="preference_form" value="1">${choices}<button type="submit">Save preferences</button></form>
+    <form method="post" class="unsubscribe-all"><input type="hidden" name="unsubscribe_all" value="1"><button type="submit">Unsubscribe from all emails</button></form>`;
+}
+
+function unsubscribePage(input: { title: string; description: string; complete: boolean; state: "confirm" | "success" | "error" | "preview"; actions?: string }): string {
   const icon = input.state === "success" ? "✓" : input.state === "error" ? "!" : "↓";
   const label = input.state === "preview" ? "Preview" : input.state === "error" ? "Link unavailable" : input.state === "success" ? "Preferences updated" : "Email preferences";
   return `<!doctype html>
@@ -593,6 +777,12 @@ function unsubscribePage(input: { title: string; description: string; complete: 
     h1{max-width:650px;margin:0 auto;color:#f5f6f8;font-size:clamp(28px,5vw,40px);line-height:1.13;letter-spacing:-.035em}
     .description{max-width:560px;margin:16px auto 0;color:#9399a5;font-size:17px;line-height:1.6}
     form{max-width:520px;margin:34px auto 0}
+    .preferences{overflow:hidden;border:1px solid #292e37;border-radius:14px;text-align:left}
+    .topic-choice{min-height:74px;padding:16px 18px;display:flex;align-items:center;gap:18px;border-bottom:1px solid #292e37;cursor:pointer}
+    .topic-choice span{display:grid;gap:5px;flex:1}.topic-choice strong{font-size:15px}.topic-choice small{color:#9299a5;font-size:13px;line-height:1.4}
+    .topic-choice input{width:20px;height:20px;accent-color:#fff}
+    .preferences button{border:0;border-radius:0}.unsubscribe-all{margin-top:14px}.unsubscribe-all button{border-color:#4d292d;background:#241417;color:#ffb7bc}
+    .unsubscribe-all button:hover{border-color:#744047;background:#331b20}
     button{width:100%;min-height:50px;border:1px solid #555c68;border-radius:11px;background:#3b414c;color:#fff;font:inherit;font-weight:650;cursor:pointer;transition:background .15s ease,border-color .15s ease,transform .15s ease}
     button:hover{border-color:#737b88;background:#4a515d}
     button:active{transform:translateY(1px)}
@@ -608,7 +798,7 @@ function unsubscribePage(input: { title: string; description: string; complete: 
         <p class="eyebrow">${label}</p>
         <h1>${escapeHtml(input.title)}</h1>
         <p class="description">${escapeHtml(input.description)}</p>
-        ${input.complete ? "" : '<form method="post"><button type="submit">Unsubscribe</button></form>'}
+        ${input.actions ?? ""}
       </div>
     </section>
   </main>

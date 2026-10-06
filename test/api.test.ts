@@ -22,11 +22,13 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM unsubscribe_tokens"),
     env.DB.prepare("DELETE FROM deliveries"),
     env.DB.prepare("DELETE FROM broadcasts"),
+    env.DB.prepare("DELETE FROM contact_topics"),
     env.DB.prepare("DELETE FROM segment_contacts"),
     env.DB.prepare("DELETE FROM contacts"),
     env.DB.prepare("DELETE FROM senders"),
     env.DB.prepare("DELETE FROM domains"),
     env.DB.prepare("DELETE FROM segments"),
+    env.DB.prepare("DELETE FROM topics"),
     env.DB.prepare("DELETE FROM api_keys"),
   ]);
   await env.DB.prepare(
@@ -59,11 +61,12 @@ describe("Resend-compatible API", () => {
     expect((await SELF.fetch("https://admin.example.com/", { headers: { "Cf-Access-Jwt-Assertion": "not-a-jwt" } })).status).toBe(401);
   });
 
-  it("provides contact detail and segment membership actions in the admin", async () => {
+  it("provides contact detail, segment membership, and topic preference actions in the admin", async () => {
     const now = nowIso();
     await env.DB.batch([
       env.DB.prepare("INSERT INTO contacts (id,email,created_at,updated_at) VALUES ('contact-admin','person@example.net',?,?)").bind(now, now),
       env.DB.prepare("INSERT INTO segments (id,name,created_at,updated_at) VALUES ('segment-admin','Updates',?,?)").bind(now, now),
+      env.DB.prepare("INSERT INTO topics (id,name,description,default_subscription,visibility,created_at,updated_at) VALUES ('topic-admin','Product news','Release notes','opt_in','public',?,?)").bind(now, now),
     ]);
     const token = await accessToken("replace-with-access-application-aud", "5 minutes");
     const authHeaders = { "Cf-Access-Jwt-Assertion": token };
@@ -71,7 +74,8 @@ describe("Resend-compatible API", () => {
     expect(detail.status).toBe(200);
     const detailHtml = await detail.text();
     expect(detailHtml).toContain("Contact details");
-    expect(detailHtml).toContain("Add or resubscribe");
+    expect(detailHtml).toContain("Segments are internal recipient groups");
+    expect(detailHtml).toContain("Product news");
 
     const added = await SELF.fetch("https://admin.example.com/contacts/contact-admin/segments", {
       method: "POST",
@@ -82,14 +86,21 @@ describe("Resend-compatible API", () => {
     expect(added.status).toBe(303);
     expect((await env.DB.prepare("SELECT status FROM segment_contacts WHERE contact_id='contact-admin' AND segment_id='segment-admin'").first<{ status: string }>())?.status).toBe("subscribed");
 
-    const unsubscribed = await SELF.fetch("https://admin.example.com/contacts/contact-admin/segments/segment-admin", {
+    const removed = await SELF.fetch("https://admin.example.com/contacts/contact-admin/segments/segment-admin", {
       method: "POST",
       redirect: "manual",
       headers: { ...authHeaders, Origin: "https://admin.example.com" },
-      body: new URLSearchParams({ status: "unsubscribed" }),
+      body: new URLSearchParams({ status: "removed" }),
     });
-    expect(unsubscribed.status).toBe(303);
-    expect((await env.DB.prepare("SELECT status FROM segment_contacts WHERE contact_id='contact-admin' AND segment_id='segment-admin'").first<{ status: string }>())?.status).toBe("unsubscribed");
+    expect(removed.status).toBe(303);
+    expect((await env.DB.prepare("SELECT status FROM segment_contacts WHERE contact_id='contact-admin' AND segment_id='segment-admin'").first<{ status: string }>())?.status).toBe("removed");
+
+    const optedOut = await SELF.fetch("https://admin.example.com/contacts/contact-admin/topics/topic-admin", {
+      method: "POST", redirect: "manual", headers: { ...authHeaders, Origin: "https://admin.example.com" },
+      body: new URLSearchParams({ subscription: "opt_out" }),
+    });
+    expect(optedOut.status).toBe(303);
+    expect((await env.DB.prepare("SELECT subscription FROM contact_topics WHERE contact_id='contact-admin' AND topic_id='topic-admin'").first<{ subscription: string }>())?.subscription).toBe("opt_out");
   });
 
   it("shows an explicit send action when reviewing a draft broadcast", async () => {
@@ -164,11 +175,29 @@ describe("Resend-compatible API", () => {
     expect(listed.data?.data[0]?.name).toBe("Customers");
   });
 
+  it("supports Topics and contact preferences through the official Resend SDK", async () => {
+    const resend = new Resend(API_KEY, { baseUrl: "https://api.example.com" });
+    const created = await resend.topics.create({ name: "Product updates", description: "Release news", defaultSubscription: "opt_in" });
+    expect(created.error).toBeNull();
+    const topicId = created.data?.id;
+    expect(topicId).toBeTruthy();
+    expect((await resend.topics.list()).data?.data[0]).toMatchObject({ id: topicId, name: "Product updates", default_subscription: "opt_in" });
+
+    const contact = await resend.contacts.create({ email: "topics@example.net" });
+    const contactId = contact.data?.id;
+    expect(contactId).toBeTruthy();
+    const updated = await resend.contacts.topics.update({ id: contactId!, topics: [{ id: topicId!, subscription: "opt_out" }] });
+    expect(updated.error).toBeNull();
+    expect((await resend.contacts.topics.list({ id: contactId! })).data?.data[0]).toMatchObject({ id: topicId, subscription: "opt_out" });
+  });
+
   it("supports contacts, segment membership, and broadcasts through the SDK", async () => {
     const resend = new Resend(API_KEY, { baseUrl: "https://api.example.com" });
     const segment = await resend.segments.create({ name: "Product updates" });
     const segmentId = segment.data?.id;
     expect(segmentId).toBeTruthy();
+    const topic = await resend.topics.create({ name: "Announcements", defaultSubscription: "opt_in" });
+    const topicId = topic.data?.id;
 
     const contact = await resend.contacts.create({
       email: "reader@example.net",
@@ -192,6 +221,7 @@ describe("Resend-compatible API", () => {
     const broadcastPayload = {
       name: "October update",
       segmentId: segmentId!,
+      topicId: topicId!,
       from: "Example News <news@example.com>",
       subject: "Hello",
       html: "<p>Hello, world.</p>",
@@ -209,17 +239,15 @@ describe("Resend-compatible API", () => {
     expect(Number(stored?.count)).toBe(1);
 
     const loaded = await resend.broadcasts.get(broadcast.data!.id);
-    expect(loaded.data).toMatchObject({ name: "October update", status: "draft", segment_id: segmentId });
+    expect(loaded.data).toMatchObject({ name: "October update", status: "draft", segment_id: segmentId, topic_id: topicId });
   });
 
-  it("keeps browser GET unsubscribe requests non-mutating", async () => {
+  it("uses global unsubscribe for broadcasts without a Topic", async () => {
     const now = nowIso();
     const token = "unsubscribe-token";
     await env.DB.batch([
-      env.DB.prepare("INSERT INTO segments (id, name, created_at, updated_at) VALUES ('s1', 'News', ?, ?)").bind(now, now),
       env.DB.prepare("INSERT INTO contacts (id, email, created_at, updated_at) VALUES ('c1', 'person@example.net', ?, ?)").bind(now, now),
-      env.DB.prepare("INSERT INTO segment_contacts (segment_id, contact_id, status, subscribed_at, updated_at) VALUES ('s1', 'c1', 'subscribed', ?, ?)").bind(now, now),
-      env.DB.prepare("INSERT INTO unsubscribe_tokens (token_hash, segment_id, contact_id, created_at) VALUES (?, 's1', 'c1', ?)").bind(await sha256(token), now),
+      env.DB.prepare("INSERT INTO unsubscribe_tokens (token_hash, contact_id, topic_id, created_at) VALUES (?, 'c1', NULL, ?)").bind(await sha256(token), now),
     ]);
 
     const page = await SELF.fetch(`https://api.example.com/unsubscribe/${token}`);
@@ -228,31 +256,51 @@ describe("Resend-compatible API", () => {
     expect(page.headers.get("Referrer-Policy")).toBe("no-referrer");
     expect(page.headers.get("X-Frame-Options")).toBe("DENY");
     const pageHtml = await page.text();
-    expect(pageHtml).toContain("Do you want to unsubscribe from News?");
-    expect(pageHtml).toContain("Confirm the email preferences for person@example.net.");
-    expect(pageHtml).toContain('<button type="submit">Unsubscribe</button>');
+    expect(pageHtml).toContain("Unsubscribe from all emails?");
+    expect(pageHtml).toContain("person@example.net");
+    expect(pageHtml).toContain("Unsubscribe from all");
     expect(pageHtml).not.toContain("Cloudflare Mail");
     expect(pageHtml).not.toContain("Powered by");
-    const before = await env.DB.prepare("SELECT status FROM segment_contacts WHERE segment_id = 's1' AND contact_id = 'c1'").first<{ status: string }>();
-    expect(before?.status).toBe("subscribed");
+    expect((await env.DB.prepare("SELECT unsubscribed FROM contacts WHERE id='c1'").first<{ unsubscribed: number }>())?.unsubscribed).toBe(0);
 
-    const posted = await SELF.fetch(`https://api.example.com/unsubscribe/${token}`, { method: "POST", body: "List-Unsubscribe=One-Click" });
+    const posted = await SELF.fetch(`https://api.example.com/unsubscribe/${token}`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "List-Unsubscribe=One-Click" });
     expect(posted.status).toBe(200);
     const postedHtml = await posted.text();
-    expect(postedHtml).toContain("You’re unsubscribed from News");
-    expect(postedHtml).not.toContain('<button type="submit">Unsubscribe</button>');
-    const after = await env.DB.prepare("SELECT status FROM segment_contacts WHERE segment_id = 's1' AND contact_id = 'c1'").first<{ status: string }>();
-    expect(after?.status).toBe("unsubscribed");
+    expect(postedHtml).toContain("You’re unsubscribed from all emails");
+    expect((await env.DB.prepare("SELECT unsubscribed FROM contacts WHERE id='c1'").first<{ unsubscribed: number }>())?.unsubscribed).toBe(1);
+  });
+
+  it("shows Topic toggles and one-click unsubscribes only the broadcast Topic", async () => {
+    const now = nowIso(); const token = "topic-token";
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO contacts (id,email,created_at,updated_at) VALUES ('ct','topics@example.net',?,?)").bind(now, now),
+      env.DB.prepare("INSERT INTO topics (id,name,description,default_subscription,visibility,created_at,updated_at) VALUES ('t1','Product updates','Release news','opt_in','public',?,?)").bind(now, now),
+      env.DB.prepare("INSERT INTO topics (id,name,description,default_subscription,visibility,created_at,updated_at) VALUES ('t2','Events','Invitations','opt_in','public',?,?)").bind(now, now),
+      env.DB.prepare("INSERT INTO unsubscribe_tokens (token_hash,contact_id,topic_id,created_at) VALUES (?,'ct','t1',?)").bind(await sha256(token), now),
+    ]);
+    const page = await SELF.fetch(`https://api.example.com/unsubscribe/${token}`);
+    const html = await page.text();
+    expect(html).toContain("Manage your email preferences");
+    expect(html).toContain("Product updates");
+    expect(html).toContain("Events");
+    expect((await env.DB.prepare("SELECT COUNT(*) AS count FROM contact_topics").first<{ count: number }>())?.count).toBe(0);
+
+    await SELF.fetch(`https://api.example.com/unsubscribe/${token}`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "List-Unsubscribe=One-Click" });
+    expect((await env.DB.prepare("SELECT subscription FROM contact_topics WHERE contact_id='ct' AND topic_id='t1'").first<{ subscription: string }>())?.subscription).toBe("opt_out");
+    expect((await env.DB.prepare("SELECT unsubscribed FROM contacts WHERE id='ct'").first<{ unsubscribed: number }>())?.unsubscribed).toBe(0);
+
+    const saved = await SELF.fetch(`https://api.example.com/unsubscribe/${token}`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "preference_form=1&topic=t1" });
+    expect((await saved.text())).toContain("Your preferences were updated");
+    const preferences = await env.DB.prepare("SELECT topic_id,subscription FROM contact_topics WHERE contact_id='ct' ORDER BY topic_id").all<{ topic_id: string; subscription: string }>();
+    expect(preferences.results).toEqual([{ topic_id: "t1", subscription: "opt_in" }, { topic_id: "t2", subscription: "opt_out" }]);
   });
 
   it("serves unsubscribe links on a configured sender-domain hostname only", async () => {
     const now = nowIso();
     const token = "domain-unsubscribe-token";
     await env.DB.batch([
-      env.DB.prepare("INSERT INTO segments (id, name, created_at, updated_at) VALUES ('s2', 'Other news', ?, ?)").bind(now, now),
       env.DB.prepare("INSERT INTO contacts (id, email, created_at, updated_at) VALUES ('c2', 'other@example.net', ?, ?)").bind(now, now),
-      env.DB.prepare("INSERT INTO segment_contacts (segment_id, contact_id, status, subscribed_at, updated_at) VALUES ('s2', 'c2', 'subscribed', ?, ?)").bind(now, now),
-      env.DB.prepare("INSERT INTO unsubscribe_tokens (token_hash, segment_id, contact_id, created_at) VALUES (?, 's2', 'c2', ?)").bind(await sha256(token), now),
+      env.DB.prepare("INSERT INTO unsubscribe_tokens (token_hash, contact_id, topic_id, created_at) VALUES (?, 'c2', NULL, ?)").bind(await sha256(token), now),
     ]);
 
     expect((await SELF.fetch(`https://mail.example.com/unsubscribe/${token}`)).status).toBe(200);

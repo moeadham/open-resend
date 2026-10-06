@@ -20,6 +20,7 @@ describe("mail helpers", () => {
     const detail: DeliveryDetail = {
       id: "delivery-1",
       broadcast_id: "broadcast-1",
+      topic_id: null,
       contact_id: "contact-1",
       recipient: "reader@example.net",
       status: "enqueued",

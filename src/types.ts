@@ -24,6 +24,16 @@ export type SegmentRow = {
   updated_at: string;
 };
 
+export type TopicRow = {
+  id: string;
+  name: string;
+  description: string | null;
+  default_subscription: "opt_in" | "opt_out";
+  visibility: "public" | "private";
+  created_at: string;
+  updated_at: string;
+};
+
 export type ContactRow = {
   id: string;
   email: string;
@@ -52,6 +62,7 @@ export type BroadcastRow = {
   id: string;
   name: string;
   segment_id: string;
+  topic_id: string | null;
   sender_id: string;
   from_value: string;
   subject: string;
@@ -81,6 +92,7 @@ export type DeliveryDetail = {
   reply_to_json: string | null;
   broadcast_status: string;
   segment_id: string;
+  topic_id: string | null;
   sender_email: string;
   sender_name: string;
   sender_reply_to: string | null;

@@ -3,7 +3,7 @@ import type { Child } from "hono/jsx";
 import { requireAccess, requireSameOrigin } from "./auth";
 import { enqueueBroadcast, retryFailedDeliveries, sendTestEmail, validateBroadcastReady } from "./delivery";
 import { AppError, appErrorResponse, assertIsoFuture, escapeHtml, isEmail, normalizeEmail, nowIso, parseUnsubscribeHostnames, randomToken, sha256, stripHtml } from "./lib";
-import type { BroadcastRow, ContactRow, SegmentRow, SenderRow } from "./types";
+import type { BroadcastRow, ContactRow, SegmentRow, SenderRow, TopicRow } from "./types";
 
 type Bindings = { Bindings: Env };
 type AdminContext = Context<Bindings>;
@@ -24,6 +24,7 @@ adminApp.get("/", (c) => c.redirect("/broadcasts", 302));
 
 adminApp.get("/contacts", (c) => c.redirect("/audience", 302));
 adminApp.get("/segments", (c) => c.redirect("/audience/segments", 302));
+adminApp.get("/topics", (c) => c.redirect("/audience/topics", 302));
 
 adminApp.get("/audience", async (c) => {
   const search = c.req.query("search")?.trim() ?? "";
@@ -55,8 +56,8 @@ adminApp.get("/audience", async (c) => {
   const total = Number(filtered?.count ?? 0);
   const queryFor = (targetPage: number) => `?${new URLSearchParams({ ...(search ? { search } : {}), ...(status ? { status } : {}), ...(segmentId ? { segment: segmentId } : {}), page: String(targetPage) })}`;
   return c.html(<Layout title="Audience"><PageHead title="Audience"><><ModalTrigger target="add-contacts">＋ Add contacts</ModalTrigger><Modal id="add-contacts" title="Add contacts"><form method="post" action="/contacts"><label>Email addresses</label><textarea name="emails" required placeholder="foo@gmail.com, bar@gmail.com"></textarea><p class="field-help">Use commas or line breaks to separate multiple email addresses.</p><label>Segment <span class="info-dot">i</span></label><select name="segment_id"><option value="">Optionally add to an existing segment…</option>{segments.results.map((segment) => <option value={segment.id}>{segment.name}</option>)}</select><ModalActions submitLabel="Add"/></form></Modal></></PageHead>
-    <AudienceTabs active="contacts"/><div class="metric-strip"><Metric label="All contacts" value={metrics?.total ?? 0}/><Metric label="Active" value={metrics?.active ?? 0}/><Metric label="Unsubscribed / suppressed" value={metrics?.inactive ?? 0}/></div>
-    <form method="get" class="toolbar"><div class="search-field"><input name="search" value={search} placeholder="Search…" aria-label="Search contacts"/></div><select name="status" aria-label="Subscription status"><option value="">All subscriptions</option><option value="active" selected={status === "active"}>Active</option><option value="unsubscribed" selected={status === "unsubscribed"}>Unsubscribed</option><option value="suppressed" selected={status === "suppressed"}>Suppressed</option></select><select name="segment" aria-label="Segment"><option value="">All segments</option>{segments.results.map((segment) => <option value={segment.id} selected={segmentId === segment.id}>{segment.name}</option>)}</select><button>Filter</button></form>
+    <AudienceTabs active="contacts"/><div class="metric-strip"><Metric label="All contacts" value={metrics?.total ?? 0}/><Metric label="Globally subscribed" value={metrics?.active ?? 0}/><Metric label="Globally unsubscribed / suppressed" value={metrics?.inactive ?? 0}/></div>
+    <form method="get" class="toolbar"><div class="search-field"><input name="search" value={search} placeholder="Search…" aria-label="Search contacts"/></div><select name="status" aria-label="Subscription status"><option value="">All global subscriptions</option><option value="active" selected={status === "active"}>Globally subscribed</option><option value="unsubscribed" selected={status === "unsubscribed"}>Globally unsubscribed</option><option value="suppressed" selected={status === "suppressed"}>Suppressed</option></select><select name="segment" aria-label="Segment"><option value="">All segments</option>{segments.results.map((segment) => <option value={segment.id} selected={segmentId === segment.id}>{segment.name}</option>)}</select><button>Filter</button></form>
     <div class="table-shell responsive-table"><table><thead><tr><th class="check-cell mobile-hide"><span class="fake-check"></span></th><th>Email</th><th class="mobile-hide">Segments</th><th class="narrow-hide">Status</th><th class="mobile-hide">Added</th><th></th></tr></thead><tbody>{rows.results.map((row) => { const rowStatus = row.suppression_reason ? "Suppressed" : row.unsubscribed ? "Unsubscribed" : "Subscribed"; return <tr class="clickable-row" data-row-href={`/contacts/${row.id}`} tabindex={0}><td class="mobile-hide"><span class="fake-check"></span></td><td><a class="row-title" href={`/contacts/${row.id}`}><span class="row-icon">@</span><span>{row.email}{(row.first_name || row.last_name) && <small>{[row.first_name, row.last_name].filter(Boolean).join(" ")}</small>}<small class="narrow-detail">{rowStatus}</small></span></a></td><td class="mobile-hide">{row.memberships ?? <span class="muted">—</span>}</td><td class="narrow-hide"><span class={`badge ${rowStatus === "Subscribed" ? "good" : "bad"}`}>{rowStatus}</span></td><td class="mobile-hide">{relativeDate(row.created_at)}</td><td class="row-action"><a class="button small-button" href={`/contacts/${row.id}`}>Open</a></td></tr>; })}</tbody></table>{!rows.results.length && <div class="empty">No contacts match these filters.</div>}</div>
     <div class="table-foot"><span>Page {page} · {total} contacts · 40 items</span><div class="push pagination">{page > 1 && <a class="button small-button" href={queryFor(page - 1)}>Newer</a>}{page * pageSize < total && <a class="button small-button" href={queryFor(page + 1)}>Older</a>}</div></div></Layout>);
 });
@@ -64,14 +65,14 @@ adminApp.get("/audience", async (c) => {
 adminApp.get("/audience/segments", async (c) => {
   const search = c.req.query("search")?.trim() ?? "";
   const rows = await c.env.DB.prepare(`SELECT s.*,
-      SUM(CASE WHEN sc.status = 'subscribed' THEN 1 ELSE 0 END) AS subscribed,
-      SUM(CASE WHEN sc.status = 'unsubscribed' THEN 1 ELSE 0 END) AS unsubscribed
+      SUM(CASE WHEN sc.status != 'removed' THEN 1 ELSE 0 END) AS members
     FROM segments s LEFT JOIN segment_contacts sc ON sc.segment_id = s.id
     ${search ? "WHERE s.name LIKE ?" : ""} GROUP BY s.id ORDER BY s.created_at DESC`)
-    .bind(...(search ? [`%${search}%`] : [])).all<SegmentRow & { subscribed: number; unsubscribed: number }>();
+    .bind(...(search ? [`%${search}%`] : [])).all<SegmentRow & { members: number }>();
   return c.html(<Layout title="Audience segments"><PageHead title="Audience"><><ModalTrigger target="create-segment">＋ Create segment</ModalTrigger><Modal id="create-segment" title="Create segment"><form method="post" action="/segments"><label>Name</label><input name="name" required maxlength={200} placeholder="Product updates"/><ModalActions submitLabel="Create"/></form></Modal></></PageHead><AudienceTabs active="segments"/>
+    <p class="muted">Segments are internal recipient groups used to target broadcasts. Recipients manage Topics, not segments.</p>
     <form method="get" class="toolbar" style="grid-template-columns:1fr auto"><div class="search-field"><input name="search" value={search} placeholder="Search…" aria-label="Search segments"/></div><button>Search</button></form>
-    <div class="table-shell responsive-table"><table><thead><tr><th class="check-cell mobile-hide"><span class="fake-check"></span></th><th>Name</th><th class="mobile-hide">Contacts</th><th class="mobile-hide">Unsubscribed</th><th class="mobile-hide">Created</th><th></th></tr></thead><tbody>{rows.results.map((row) => <tr><td class="mobile-hide"><span class="fake-check"></span></td><td><div class="row-title"><span class="row-icon">♧</span><form method="post" action={`/segments/${row.id}`} class="inline-form"><input name="name" value={row.name} required maxlength={200}/><button class="small-button">Save</button></form></div></td><td class="mobile-hide">{row.subscribed ?? 0}</td><td class="mobile-hide">{row.unsubscribed ?? 0}</td><td class="mobile-hide">{relativeDate(row.created_at)}</td><td class="row-action"><form method="post" action={`/segments/${row.id}/delete`} data-confirm="Delete this segment?"><button class="danger small-button">Delete</button></form></td></tr>)}</tbody></table>{!rows.results.length && <div class="empty">No segments yet.</div>}</div><div class="table-foot">{rows.results.length} segments</div></Layout>);
+    <div class="table-shell responsive-table"><table><thead><tr><th class="check-cell mobile-hide"><span class="fake-check"></span></th><th>Name</th><th class="mobile-hide">Contacts</th><th class="mobile-hide">Created</th><th></th></tr></thead><tbody>{rows.results.map((row) => <tr><td class="mobile-hide"><span class="fake-check"></span></td><td><div class="row-title"><span class="row-icon">♧</span><form method="post" action={`/segments/${row.id}`} class="inline-form"><input name="name" value={row.name} required maxlength={200}/><button class="small-button">Save</button></form></div></td><td class="mobile-hide">{row.members ?? 0}</td><td class="mobile-hide">{relativeDate(row.created_at)}</td><td class="row-action"><form method="post" action={`/segments/${row.id}/delete`} data-confirm="Delete this segment?"><button class="danger small-button">Delete</button></form></td></tr>)}</tbody></table>{!rows.results.length && <div class="empty">No segments yet.</div>}</div><div class="table-foot">{rows.results.length} segments</div></Layout>);
 });
 
 adminApp.post("/segments", async (c) => {
@@ -90,6 +91,37 @@ adminApp.post("/segments/:id", async (c) => {
 adminApp.post("/segments/:id/delete", async (c) => {
   await c.env.DB.prepare("DELETE FROM segments WHERE id=?").bind(c.req.param("id")).run();
   return c.redirect("/audience/segments", 303);
+});
+
+adminApp.get("/audience/topics", async (c) => {
+  const topics = await c.env.DB.prepare("SELECT * FROM topics ORDER BY created_at DESC").all<TopicRow>();
+  return c.html(<Layout title="Audience topics"><PageHead title="Audience"><><ModalTrigger target="create-topic">＋ Create topic</ModalTrigger><Modal id="create-topic" title="Create topic"><form method="post" action="/topics"><label>Name</label><input name="name" required maxlength={50} placeholder="Product updates"/><label>Description</label><textarea name="description" maxlength={200} placeholder="News about product improvements"></textarea><label>Default subscription</label><select name="default_subscription" required><option value="opt_in">Opted in</option><option value="opt_out">Opted out</option></select><label>Visibility</label><select name="visibility" required><option value="public">Public — shown on preference pages</option><option value="private">Private — shown only when explicitly subscribed</option></select><ModalActions submitLabel="Create"/></form></Modal></></PageHead><AudienceTabs active="topics"/>
+    <p class="muted">Topics are recipient-facing email preferences. Tag a broadcast with a Topic to let recipients opt out of that category without leaving every broadcast.</p>
+    <div class="table-shell responsive-table"><table><thead><tr><th>Name</th><th class="mobile-hide">Default</th><th class="mobile-hide">Visibility</th><th></th></tr></thead><tbody>{topics.results.map((topic) => <tr><td><form method="post" action={`/topics/${topic.id}`} class="inline-form topic-edit"><span class="row-icon">☷</span><input name="name" value={topic.name} required maxlength={50}/><input name="description" value={topic.description ?? ""} maxlength={200} placeholder="Description"/><select name="visibility"><option value="public" selected={topic.visibility === "public"}>Public</option><option value="private" selected={topic.visibility === "private"}>Private</option></select><button class="small-button">Save</button></form></td><td class="mobile-hide">{topic.default_subscription === "opt_in" ? "Opted in" : "Opted out"}</td><td class="mobile-hide">{capitalize(topic.visibility)}</td><td class="row-action"><form method="post" action={`/topics/${topic.id}/delete`} data-confirm="Delete this topic? Existing broadcasts will become untagged."><button class="danger small-button">Delete</button></form></td></tr>)}</tbody></table>{!topics.results.length && <div class="empty">No topics yet. Untagged broadcasts use global unsubscribe.</div>}</div></Layout>);
+});
+
+adminApp.post("/topics", async (c) => {
+  const form = await c.req.parseBody(); const now = nowIso();
+  const defaultSubscription = String(form.default_subscription ?? "");
+  const visibility = String(form.visibility ?? "");
+  if (!['opt_in','opt_out'].includes(defaultSubscription) || !['public','private'].includes(visibility)) throw new AppError(422, "validation_error", "Topic settings are invalid.");
+  await c.env.DB.prepare("INSERT INTO topics (id,name,description,default_subscription,visibility,created_at,updated_at) VALUES (?,?,?,?,?,?,?)")
+    .bind(crypto.randomUUID(), textField(form.name, "name", 50), optionalFormText(form.description, 200), defaultSubscription, visibility, now, now).run();
+  return c.redirect("/audience/topics", 303);
+});
+
+adminApp.post("/topics/:id", async (c) => {
+  const form = await c.req.parseBody(); const visibility = String(form.visibility ?? "");
+  if (!['public','private'].includes(visibility)) throw new AppError(422, "validation_error", "Topic visibility is invalid.");
+  const result = await c.env.DB.prepare("UPDATE topics SET name=?,description=?,visibility=?,updated_at=? WHERE id=?")
+    .bind(textField(form.name, "name", 50), optionalFormText(form.description, 200), visibility, nowIso(), c.req.param("id")).run();
+  if (!result.meta.changes) throw new AppError(404, "not_found", "Topic not found.");
+  return c.redirect("/audience/topics", 303);
+});
+
+adminApp.post("/topics/:id/delete", async (c) => {
+  await c.env.DB.prepare("DELETE FROM topics WHERE id=?").bind(c.req.param("id")).run();
+  return c.redirect("/audience/topics", 303);
 });
 
 adminApp.post("/contacts", async (c) => {
@@ -112,22 +144,26 @@ adminApp.post("/contacts", async (c) => {
 
 adminApp.get("/contacts/:id", async (c) => {
   const contactId = c.req.param("id");
-  const [contact, memberships, segments] = await Promise.all([
+  const [contact, memberships, segments, topics] = await Promise.all([
     c.env.DB.prepare("SELECT * FROM contacts WHERE id=?").bind(contactId).first<ContactRow>(),
     c.env.DB.prepare(`SELECT s.id,s.name,sc.status,sc.subscribed_at,sc.unsubscribed_at
       FROM segment_contacts sc JOIN segments s ON s.id=sc.segment_id
-      WHERE sc.contact_id=? ORDER BY s.name`).bind(contactId).all<{ id: string; name: string; status: string; subscribed_at: string; unsubscribed_at: string | null }>(),
+      WHERE sc.contact_id=? AND sc.status != 'removed' ORDER BY s.name`).bind(contactId).all<{ id: string; name: string; status: string; subscribed_at: string; unsubscribed_at: string | null }>(),
     c.env.DB.prepare("SELECT id,name FROM segments ORDER BY name").all<Pick<SegmentRow, "id" | "name">>(),
+    c.env.DB.prepare(`SELECT t.id,t.name,t.description,COALESCE(ct.subscription,t.default_subscription) AS subscription
+      FROM topics t LEFT JOIN contact_topics ct ON ct.topic_id=t.id AND ct.contact_id=? ORDER BY t.name`)
+      .bind(contactId).all<{ id: string; name: string; description: string | null; subscription: "opt_in" | "opt_out" }>(),
   ]);
   if (!contact) throw new AppError(404, "not_found", "Contact not found.");
   const displayName = [contact.first_name, contact.last_name].filter(Boolean).join(" ");
-  const status = contact.suppression_reason ? "Suppressed" : contact.unsubscribed ? "Unsubscribed" : "Subscribed";
-  return c.html(<Layout title="Audience contact"><div class="detail-head"><div><a class="crumb" href="/audience">← Audience</a><h1>{displayName || contact.email}</h1><p class="muted">{displayName ? contact.email : "Contact details and segment subscriptions"}</p></div><span class={`badge ${status === "Subscribed" ? "good" : "bad"}`}>{status}</span></div>
+  const status = contact.suppression_reason ? "Suppressed" : contact.unsubscribed ? "Globally unsubscribed" : "Globally subscribed";
+  return c.html(<Layout title="Audience contact"><div class="detail-head"><div><a class="crumb" href="/audience">← Audience</a><h1>{displayName || contact.email}</h1><p class="muted">{displayName ? contact.email : "Contact details and email preferences"}</p></div><span class={`badge ${status === "Globally subscribed" ? "good" : "bad"}`}>{status}</span></div>
     {contact.suppression_reason && <div class="panel error"><strong>Globally suppressed</strong><p>{contact.suppression_reason}</p></div>}
     <div class="detail-grid"><section class="panel"><h2 class="section-title">Contact details</h2><form method="post" action={`/contacts/${contact.id}`}><label>Email</label><input name="email" type="email" value={contact.email} required/><div class="form-grid"><div><label>First name</label><input name="first_name" value={contact.first_name ?? ""}/></div><div><label>Last name</label><input name="last_name" value={contact.last_name ?? ""}/></div></div><div class="actions form-actions"><button class="primary">Save contact</button></div></form></section>
       <section class="panel"><h2 class="section-title">Global subscription</h2><p class="muted">This setting applies across every segment. Hard bounces and complaints remain suppressed.</p><form method="post" action={`/contacts/${contact.id}/subscription`}><input type="hidden" name="subscribed" value={contact.unsubscribed ? "true" : "false"}/><button class={contact.unsubscribed ? "primary" : "danger"}>{contact.unsubscribed ? "Globally resubscribe" : "Globally unsubscribe"}</button></form></section></div>
-    <section class="panel"><div class="section-head"><div><h2 class="section-title">Segments</h2><p class="muted">A contact receives a broadcast only while subscribed to its segment.</p></div>{segments.results.length > 0 && <form method="post" action={`/contacts/${contact.id}/segments`} class="inline-form segment-add"><select name="segment_id" required><option value="">Select segment…</option>{segments.results.map((segment) => <option value={segment.id}>{segment.name}</option>)}</select><button class="primary">Add or resubscribe</button></form>}</div>
-      <div class="table-shell responsive-table"><table><thead><tr><th>Segment</th><th>Status</th><th class="mobile-hide">Subscribed</th><th></th></tr></thead><tbody>{memberships.results.map((membership) => <tr><td>{membership.name}</td><td><span class={`badge ${membership.status === "subscribed" ? "good" : "bad"}`}>{membership.status}</span></td><td class="mobile-hide">{relativeDate(membership.subscribed_at)}</td><td><div class="actions membership-actions">{membership.status === "subscribed" ? <><form method="post" action={`/contacts/${contact.id}/segments/${membership.id}`}><input type="hidden" name="status" value="unsubscribed"/><button class="small-button">Unsubscribe</button></form><form method="post" action={`/contacts/${contact.id}/segments/${membership.id}`}><input type="hidden" name="status" value="removed"/><button class="danger small-button">Remove</button></form></> : <form method="post" action={`/contacts/${contact.id}/segments/${membership.id}`}><input type="hidden" name="status" value="subscribed"/><button class="primary small-button">Resubscribe</button></form>}</div></td></tr>)}</tbody></table>{!memberships.results.length && <div class="empty">This contact is not in a segment yet.</div>}</div></section>
+    <section class="panel"><div class="section-head"><div><h2 class="section-title">Segments</h2><p class="muted">Segments are internal recipient groups. Membership determines which broadcasts target this contact.</p></div>{segments.results.length > 0 && <form method="post" action={`/contacts/${contact.id}/segments`} class="inline-form segment-add"><select name="segment_id" required><option value="">Select segment…</option>{segments.results.map((segment) => <option value={segment.id}>{segment.name}</option>)}</select><button class="primary">Add</button></form>}</div>
+      <div class="table-shell responsive-table"><table><thead><tr><th>Segment</th><th class="mobile-hide">Added</th><th></th></tr></thead><tbody>{memberships.results.map((membership) => <tr><td>{membership.name}</td><td class="mobile-hide">{relativeDate(membership.subscribed_at)}</td><td><form method="post" action={`/contacts/${contact.id}/segments/${membership.id}`}><input type="hidden" name="status" value="removed"/><button class="danger small-button">Remove</button></form></td></tr>)}</tbody></table>{!memberships.results.length && <div class="empty">This contact is not in a segment yet.</div>}</div></section>
+    <section class="panel"><div class="section-head"><div><h2 class="section-title">Topics</h2><p class="muted">Topics are recipient-facing preferences and apply across segments.</p></div></div><div class="table-shell responsive-table"><table><thead><tr><th>Topic</th><th>Preference</th><th></th></tr></thead><tbody>{topics.results.map((topic) => <tr><td><strong>{topic.name}</strong>{topic.description && <small class="mobile-detail">{topic.description}</small>}</td><td><span class={`badge ${topic.subscription === "opt_in" ? "good" : "bad"}`}>{topic.subscription === "opt_in" ? "Opted in" : "Opted out"}</span></td><td><form method="post" action={`/contacts/${contact.id}/topics/${topic.id}`}><input type="hidden" name="subscription" value={topic.subscription === "opt_in" ? "opt_out" : "opt_in"}/><button class="small-button">{topic.subscription === "opt_in" ? "Opt out" : "Opt in"}</button></form></td></tr>)}</tbody></table>{!topics.results.length && <div class="empty">No Topics have been created.</div>}</div></section>
     <section class="panel danger-zone"><h2 class="section-title">Delete contact</h2><p class="muted">This permanently removes the contact and all segment memberships.</p><form method="post" action={`/contacts/${contact.id}/delete`} data-confirm="Delete this contact permanently?"><button class="danger">Delete contact</button></form></section></Layout>);
 });
 
@@ -170,12 +206,26 @@ adminApp.post("/contacts/:id/segments", async (c) => {
 adminApp.post("/contacts/:id/segments/:segmentId", async (c) => {
   const form = await c.req.parseBody();
   const status = String(form.status ?? "");
-  if (!['subscribed','unsubscribed','removed'].includes(status)) throw new AppError(422, "validation_error", "Membership status is invalid.");
+  if (!['subscribed','removed'].includes(status)) throw new AppError(422, "validation_error", "Membership status is invalid.");
   const now = nowIso();
   const result = status === "subscribed"
     ? await c.env.DB.prepare("UPDATE segment_contacts SET status='subscribed',subscribed_at=?,unsubscribed_at=NULL,updated_at=? WHERE contact_id=? AND segment_id=?").bind(now, now, c.req.param("id"), c.req.param("segmentId")).run()
-    : await c.env.DB.prepare("UPDATE segment_contacts SET status=?,unsubscribed_at=CASE WHEN ?='unsubscribed' THEN ? ELSE unsubscribed_at END,updated_at=? WHERE contact_id=? AND segment_id=?").bind(status, status, now, now, c.req.param("id"), c.req.param("segmentId")).run();
+    : await c.env.DB.prepare("UPDATE segment_contacts SET status='removed',updated_at=? WHERE contact_id=? AND segment_id=?").bind(now, c.req.param("id"), c.req.param("segmentId")).run();
   if (!result.meta.changes) throw new AppError(404, "not_found", "Segment membership not found.");
+  return c.redirect(`/contacts/${c.req.param("id")}`, 303);
+});
+
+adminApp.post("/contacts/:id/topics/:topicId", async (c) => {
+  const form = await c.req.parseBody(); const subscription = String(form.subscription ?? "");
+  if (!['opt_in','opt_out'].includes(subscription)) throw new AppError(422, "validation_error", "Topic preference is invalid.");
+  const [contact, topic] = await Promise.all([
+    c.env.DB.prepare("SELECT id FROM contacts WHERE id=?").bind(c.req.param("id")).first(),
+    c.env.DB.prepare("SELECT id FROM topics WHERE id=?").bind(c.req.param("topicId")).first(),
+  ]);
+  if (!contact || !topic) throw new AppError(404, "not_found", "Contact or topic not found.");
+  await c.env.DB.prepare(`INSERT INTO contact_topics (topic_id,contact_id,subscription,updated_at) VALUES (?,?,?,?)
+    ON CONFLICT(topic_id,contact_id) DO UPDATE SET subscription=excluded.subscription,updated_at=excluded.updated_at`)
+    .bind(c.req.param("topicId"), c.req.param("id"), subscription, nowIso()).run();
   return c.redirect(`/contacts/${c.req.param("id")}`, 303);
 });
 
@@ -211,25 +261,25 @@ adminApp.get("/broadcasts", async (c) => {
 });
 
 adminApp.get("/broadcasts/new", async (c) => {
-  const [segments, senders, domains] = await broadcastOptions(c);
-  return c.html(<Layout title="New broadcast"><BroadcastEditor segments={segments.results} senders={senders.results} domains={domains.results}/></Layout>);
+  const [segments, senders, domains, topics] = await broadcastOptions(c);
+  return c.html(<Layout title="New broadcast"><BroadcastEditor segments={segments.results} senders={senders.results} domains={domains.results} topics={topics.results}/></Layout>);
 });
 
 adminApp.post("/broadcasts", async (c) => {
   const form = await c.req.parseBody();
   const prepared = await adminBroadcastFields(c, form);
   const id = crypto.randomUUID(); const now = nowIso();
-  await c.env.DB.prepare(`INSERT INTO broadcasts (id,name,segment_id,sender_id,from_value,subject,preview_text,html,text,status,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,'draft',?,?)`).bind(id, prepared.name, prepared.segmentId, prepared.sender.id, `${prepared.sender.name} <${prepared.sender.email}>`, prepared.subject, prepared.previewText, prepared.html, stripHtml(prepared.html), now, now).run();
+  await c.env.DB.prepare(`INSERT INTO broadcasts (id,name,segment_id,topic_id,sender_id,from_value,subject,preview_text,html,text,status,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,'draft',?,?)`).bind(id, prepared.name, prepared.segmentId, prepared.topicId, prepared.sender.id, `${prepared.sender.name} <${prepared.sender.email}>`, prepared.subject, prepared.previewText, prepared.html, stripHtml(prepared.html), now, now).run();
   return c.redirect(`/broadcasts/${id}`, 303);
 });
 
 adminApp.get("/broadcasts/:id/editor", async (c) => {
-  const [segments, senders, domains] = await broadcastOptions(c);
+  const [segments, senders, domains, topics] = await broadcastOptions(c);
   const broadcast = await c.env.DB.prepare("SELECT * FROM broadcasts WHERE id=?").bind(c.req.param("id")).first<BroadcastRow>();
   if (!broadcast) throw new AppError(404, "not_found", "Broadcast not found.");
   if (broadcast.status !== "draft") return c.redirect(`/broadcasts/${broadcast.id}`, 302);
-  return c.html(<Layout title={`${broadcast.name} editor`}><BroadcastEditor broadcast={broadcast} segments={segments.results} senders={senders.results} domains={domains.results}/></Layout>);
+  return c.html(<Layout title={`${broadcast.name} editor`}><BroadcastEditor broadcast={broadcast} segments={segments.results} senders={senders.results} domains={domains.results} topics={topics.results}/></Layout>);
 });
 
 adminApp.post("/broadcasts/:id/editor", async (c) => {
@@ -237,21 +287,21 @@ adminApp.post("/broadcasts/:id/editor", async (c) => {
   if (!existing) throw new AppError(404, "not_found", "Broadcast not found.");
   if (existing.status !== "draft") throw new AppError(409, "conflict", "Only draft broadcasts can be edited.");
   const prepared = await adminBroadcastFields(c, await c.req.parseBody());
-  await c.env.DB.prepare(`UPDATE broadcasts SET name=?,segment_id=?,sender_id=?,from_value=?,subject=?,preview_text=?,html=?,text=?,updated_at=? WHERE id=?`)
-    .bind(prepared.name, prepared.segmentId, prepared.sender.id, `${prepared.sender.name} <${prepared.sender.email}>`, prepared.subject, prepared.previewText, prepared.html, stripHtml(prepared.html), nowIso(), c.req.param("id")).run();
+  await c.env.DB.prepare(`UPDATE broadcasts SET name=?,segment_id=?,topic_id=?,sender_id=?,from_value=?,subject=?,preview_text=?,html=?,text=?,updated_at=? WHERE id=?`)
+    .bind(prepared.name, prepared.segmentId, prepared.topicId, prepared.sender.id, `${prepared.sender.name} <${prepared.sender.email}>`, prepared.subject, prepared.previewText, prepared.html, stripHtml(prepared.html), nowIso(), c.req.param("id")).run();
   return c.redirect(`/broadcasts/${c.req.param("id")}`, 303);
 });
 
 adminApp.get("/broadcasts/:id", async (c) => {
-  const broadcast = await c.env.DB.prepare(`SELECT b.*,s.email AS sender_email,s.name AS sender_name,sg.name AS segment_name FROM broadcasts b JOIN senders s ON s.id=b.sender_id JOIN segments sg ON sg.id=b.segment_id WHERE b.id=?`)
-    .bind(c.req.param("id")).first<BroadcastRow & { sender_email: string; sender_name: string; segment_name: string }>();
+  const broadcast = await c.env.DB.prepare(`SELECT b.*,s.email AS sender_email,s.name AS sender_name,sg.name AS segment_name,t.name AS topic_name FROM broadcasts b JOIN senders s ON s.id=b.sender_id JOIN segments sg ON sg.id=b.segment_id LEFT JOIN topics t ON t.id=b.topic_id WHERE b.id=?`)
+    .bind(c.req.param("id")).first<BroadcastRow & { sender_email: string; sender_name: string; segment_name: string; topic_name: string | null }>();
   if (!broadcast) throw new AppError(404, "not_found", "Broadcast not found.");
   const [counts, deliveries] = await Promise.all([
     c.env.DB.prepare("SELECT status,COUNT(*) AS count FROM deliveries WHERE broadcast_id=? GROUP BY status").bind(broadcast.id).all<{ status: string; count: number }>(),
     c.env.DB.prepare("SELECT recipient,status,attempts,message_id,last_error,updated_at FROM deliveries WHERE broadcast_id=? ORDER BY updated_at DESC LIMIT 100").bind(broadcast.id).all<{ recipient: string; status: string; attempts: number; message_id: string | null; last_error: string | null; updated_at: string }>(),
   ]);
   return c.html(<Layout title={broadcast.name}><div class="editor-head"><a class="crumb" href="/broadcasts">← Broadcasts</a><strong>/</strong><strong>{broadcast.name}</strong><span class={`badge ${broadcast.status}`}>{broadcast.status}</span><div class="push actions">{broadcast.status === "draft" && <><a class="button" href={`/broadcasts/${broadcast.id}/editor`}>Edit</a><form method="post" action={`/broadcasts/${broadcast.id}/send`} data-confirm="Send this broadcast now?"><button class="primary">Send now</button></form></>}{!['sent','cancelled','draft'].includes(broadcast.status) && <form method="post" action={`/broadcasts/${broadcast.id}/cancel`} data-confirm="Cancel unsent deliveries?"><button class="danger">Cancel</button></form>}</div></div>
-    <div class="grid"><Stat label="Audience" value={broadcast.segment_name}/><Stat label="Sender" value={broadcast.sender_name}/>{counts.results.map((row) => <Stat label={capitalize(row.status)} value={row.count}/>)}</div>
+    <div class="grid"><Stat label="Audience" value={broadcast.segment_name}/><Stat label="Topic" value={broadcast.topic_name ?? "None · global unsubscribe"}/><Stat label="Sender" value={broadcast.sender_name}/>{counts.results.map((row) => <Stat label={capitalize(row.status)} value={row.count}/>)}</div>
     <div class="panel"><h2 class="section-title">{broadcast.subject}</h2><iframe title="Campaign preview" sandbox="" class="preview-frame" srcdoc={broadcast.html ?? `<pre>${escapeHtml(broadcast.text)}</pre>`}></iframe></div>
     <div class="panel actions">{broadcast.status === "draft" && <form method="post" action={`/broadcasts/${broadcast.id}/schedule`} data-schedule-form><input type="datetime-local" data-schedule-local required/><input type="hidden" name="scheduled_at"/><button>Schedule</button></form>}<form method="post" action={`/broadcasts/${broadcast.id}/test`}><input name="email" type="email" placeholder="Test recipient" required/><button>Send test</button></form>{broadcast.status !== "cancelled" && counts.results.some((row) => row.status === "failed" && row.count > 0) && <form method="post" action={`/broadcasts/${broadcast.id}/retry`}><button>Retry failures</button></form>}</div>
     {deliveries.results.length > 0 && <div class="table-shell responsive-table"><table><thead><tr><th>Recipient</th><th>Status</th><th class="mobile-hide">Attempts</th><th class="mobile-hide">Message ID / error</th><th class="mobile-hide">Updated</th></tr></thead><tbody>{deliveries.results.map((delivery) => <tr><td>{delivery.recipient}</td><td><span class={`badge ${delivery.status}`}>{delivery.status}</span></td><td class="mobile-hide">{delivery.attempts}</td><td class="muted mobile-hide">{delivery.last_error ?? delivery.message_id ?? "—"}</td><td class="mobile-hide">{relativeDate(delivery.updated_at)}</td></tr>)}</tbody></table></div>}</Layout>);
@@ -326,7 +376,7 @@ function Modal({ id, title, children, autoOpen = false }: { id: string; title: s
 function ModalActions({ submitLabel }: { submitLabel: string }) {
   return <div class="modal-actions"><button class="primary" type="submit">{submitLabel} <kbd>⌘</kbd><kbd>↵</kbd></button><button type="button" data-modal-close>Cancel <kbd>Esc</kbd></button></div>;
 }
-function AudienceTabs({ active }: { active: "contacts" | "segments" }) { return <div class="tabs"><a class={`tab ${active === "contacts" ? "active" : ""}`} href="/audience">Contacts</a><a class={`tab ${active === "segments" ? "active" : ""}`} href="/audience/segments">Segments</a></div>; }
+function AudienceTabs({ active }: { active: "contacts" | "segments" | "topics" }) { return <div class="tabs"><a class={`tab ${active === "contacts" ? "active" : ""}`} href="/audience">Contacts</a><a class={`tab ${active === "segments" ? "active" : ""}`} href="/audience/segments">Segments</a><a class={`tab ${active === "topics" ? "active" : ""}`} href="/audience/topics">Topics</a></div>; }
 function Metric({ label, value }: { label: string; value: number }) { return <div class="metric">{label}<strong>{Number(value).toLocaleString("en")}</strong></div>; }
 function Stat({ label, value }: { label: string; value: number | string }) { return <div class="panel"><div class="stat">{value}</div><div class="muted">{label}</div></div>; }
 
@@ -334,17 +384,18 @@ function SenderModal({ id, domains, returnTo }: { id: string; domains: DomainRow
   return <Modal id={id} title="Add sender"><form method="post" action="/senders"><input type="hidden" name="return_to" value={returnTo}/><label>Domain</label><select name="domain_id" required><option value="">Select…</option>{domains.map((domain) => <option value={domain.id}>{domain.name}</option>)}</select><label>Email</label><input name="email" type="email" required/><label>Display name</label><input name="name" required/><label>Reply-to</label><input name="reply_to" type="email"/><label>Physical postal address</label><textarea name="postal_address" required></textarea><ModalActions submitLabel="Add"/></form></Modal>;
 }
 
-function BroadcastEditor({ broadcast, segments, senders, domains }: { broadcast?: BroadcastRow; segments: SegmentRow[]; senders: SenderRow[]; domains: DomainRow[] }) {
+function BroadcastEditor({ broadcast, segments, senders, domains, topics }: { broadcast?: BroadcastRow; segments: SegmentRow[]; senders: SenderRow[]; domains: DomainRow[]; topics: TopicRow[] }) {
   const action = broadcast ? `/broadcasts/${broadcast.id}/editor` : "/broadcasts";
   const returnTo = broadcast ? `/broadcasts/${broadcast.id}/editor` : "/broadcasts/new";
-  return <><div class="editor-page"><form method="post" action={action}><div class="editor-head"><a class="crumb" href="/broadcasts">← Broadcasts</a><strong>/</strong><input name="name" value={broadcast?.name ?? "Untitled"} aria-label="Broadcast name" required maxlength={200} style="width:220px"/><span class="badge draft">Draft</span><div class="push actions">{broadcast && <a class="button" href={`/broadcasts/${broadcast.id}`}>Cancel</a>}<button class="primary">Save and review</button></div></div><div class="editor-canvas"><div class="editor-fields"><div class="editor-row"><label>From</label><div class="editor-field-control"><select name="sender_id" required><option value="">{senders.length ? "Select a sending address…" : "No sending addresses yet"}</option>{senders.map((sender) => <option value={sender.id} selected={sender.id === broadcast?.sender_id}>{sender.name} &lt;{sender.email}&gt;</option>)}</select><button type="button" class="ghost small-button" data-modal-open="editor-add-sender">＋ Add sender</button></div></div><div class="editor-row"><label>To</label><select name="segment_id" required><option value="">Select a segment…</option>{segments.map((segment) => <option value={segment.id} selected={segment.id === broadcast?.segment_id}>{segment.name}</option>)}</select></div><div class="editor-row"><label>Subject</label><input name="subject" value={broadcast?.subject ?? ""} placeholder="Write a subject…" required maxlength={998}/></div><div class="editor-row"><label>Preview</label><input name="preview_text" value={broadcast?.preview_text ?? ""} placeholder="Optional preview text" maxlength={500}/></div></div><div class="editor-body"><div data-rich-editor></div><textarea id="html-input" name="html" style="display:none">{broadcast?.html ?? "<p>Start writing your email…</p>"}</textarea><div class="editor-note">A compliant postal-address and unsubscribe footer is added automatically when the broadcast is sent.</div></div></div></form></div><SenderModal id="editor-add-sender" domains={domains} returnTo={returnTo}/></>;
+  return <><div class="editor-page"><form method="post" action={action}><div class="editor-head"><a class="crumb" href="/broadcasts">← Broadcasts</a><strong>/</strong><input name="name" value={broadcast?.name ?? "Untitled"} aria-label="Broadcast name" required maxlength={200} style="width:220px"/><span class="badge draft">Draft</span><div class="push actions">{broadcast && <a class="button" href={`/broadcasts/${broadcast.id}`}>Cancel</a>}<button class="primary">Save and review</button></div></div><div class="editor-canvas"><div class="editor-fields"><div class="editor-row"><label>From</label><div class="editor-field-control"><select name="sender_id" required><option value="">{senders.length ? "Select a sending address…" : "No sending addresses yet"}</option>{senders.map((sender) => <option value={sender.id} selected={sender.id === broadcast?.sender_id}>{sender.name} &lt;{sender.email}&gt;</option>)}</select><button type="button" class="ghost small-button" data-modal-open="editor-add-sender">＋ Add sender</button></div></div><div class="editor-row"><label>To</label><select name="segment_id" required><option value="">Select a segment…</option>{segments.map((segment) => <option value={segment.id} selected={segment.id === broadcast?.segment_id}>{segment.name}</option>)}</select></div><div class="editor-row"><label>Topic</label><div class="editor-field-control"><select name="topic_id"><option value="">No topic — unsubscribe applies globally</option>{topics.map((topic) => <option value={topic.id} selected={topic.id === broadcast?.topic_id}>{topic.name}</option>)}</select><a class="button ghost small-button" href="/audience/topics">Manage topics</a></div></div><div class="editor-row"><label>Subject</label><input name="subject" value={broadcast?.subject ?? ""} placeholder="Write a subject…" required maxlength={998}/></div><div class="editor-row"><label>Preview</label><input name="preview_text" value={broadcast?.preview_text ?? ""} placeholder="Optional preview text" maxlength={500}/></div></div><div class="editor-body"><div data-rich-editor></div><textarea id="html-input" name="html" style="display:none">{broadcast?.html ?? "<p>Start writing your email…</p>"}</textarea><div class="editor-note">A compliant postal-address and unsubscribe footer is added automatically. A Topic limits unsubscribe to that preference; no Topic means global unsubscribe.</div></div></div></form></div><SenderModal id="editor-add-sender" domains={domains} returnTo={returnTo}/></>;
 }
-async function broadcastOptions(c: AdminContext): Promise<[D1Result<SegmentRow>, D1Result<SenderRow>, D1Result<DomainRow>]> { return Promise.all([c.env.DB.prepare("SELECT * FROM segments ORDER BY name").all<SegmentRow>(), c.env.DB.prepare("SELECT * FROM senders WHERE active=1 ORDER BY name").all<SenderRow>(), c.env.DB.prepare("SELECT * FROM domains ORDER BY name").all<DomainRow>()]); }
-async function adminBroadcastFields(c: AdminContext, form: Record<string, string | File>): Promise<{ name: string; segmentId: string; sender: SenderRow; subject: string; previewText: string | null; html: string }> {
+async function broadcastOptions(c: AdminContext): Promise<[D1Result<SegmentRow>, D1Result<SenderRow>, D1Result<DomainRow>, D1Result<TopicRow>]> { return Promise.all([c.env.DB.prepare("SELECT * FROM segments ORDER BY name").all<SegmentRow>(), c.env.DB.prepare("SELECT * FROM senders WHERE active=1 ORDER BY name").all<SenderRow>(), c.env.DB.prepare("SELECT * FROM domains ORDER BY name").all<DomainRow>(), c.env.DB.prepare("SELECT * FROM topics ORDER BY name").all<TopicRow>()]); }
+async function adminBroadcastFields(c: AdminContext, form: Record<string, string | File>): Promise<{ name: string; segmentId: string; topicId: string | null; sender: SenderRow; subject: string; previewText: string | null; html: string }> {
   const segmentId = textField(form.segment_id, "segment_id", 100); const senderId = textField(form.sender_id, "sender_id", 100);
-  const [segment, sender] = await Promise.all([c.env.DB.prepare("SELECT id FROM segments WHERE id=?").bind(segmentId).first(), c.env.DB.prepare("SELECT * FROM senders WHERE id=? AND active=1").bind(senderId).first<SenderRow>()]);
-  if (!segment || !sender) throw new AppError(422, "validation_error", "Select a valid segment and sending address.");
-  return { name: textField(form.name, "name", 200), segmentId, sender, subject: textField(form.subject, "subject", 998), previewText: String(form.preview_text ?? "").trim() || null, html: textField(form.html, "html", 1_000_000) };
+  const topicId = String(form.topic_id ?? "").trim() || null;
+  const [segment, sender, topic] = await Promise.all([c.env.DB.prepare("SELECT id FROM segments WHERE id=?").bind(segmentId).first(), c.env.DB.prepare("SELECT * FROM senders WHERE id=? AND active=1").bind(senderId).first<SenderRow>(), topicId ? c.env.DB.prepare("SELECT id FROM topics WHERE id=?").bind(topicId).first() : null]);
+  if (!segment || !sender || (topicId && !topic)) throw new AppError(422, "validation_error", "Select a valid segment, topic, and sending address.");
+  return { name: textField(form.name, "name", 200), segmentId, topicId, sender, subject: textField(form.subject, "subject", 998), previewText: String(form.preview_text ?? "").trim() || null, html: textField(form.html, "html", 1_000_000) };
 }
 function textField(value: string | File | undefined, field: string, max: number): string { if (typeof value !== "string" || !value.trim()) throw new AppError(422, "missing_required_field", `${field} is required.`); if (value.length > max) throw new AppError(422, "validation_error", `${field} is too long.`); return value.trim(); }
 function optionalFormText(value: string | File | undefined, max: number): string | null { if (value === undefined || value === "") return null; if (typeof value !== "string" || value.length > max) throw new AppError(422, "validation_error", `Value must be at most ${max} characters.`); return value.trim() || null; }

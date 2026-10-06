@@ -138,6 +138,7 @@ export function broadcastResponse(row: BroadcastRow): Record<string, unknown> {
     id: row.id,
     name: row.name,
     segment_id: row.segment_id,
+    topic_id: row.topic_id,
     audience_id: null,
     from: row.from_value,
     subject: row.subject,

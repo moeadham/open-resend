@@ -1,6 +1,6 @@
 # Cloudflare Mail
 
-A small, Cloudflare-native mailing-list and campaign service with a Resend-compatible API. It supports named segments, contacts, multiple sending domains and senders, draft/immediate/scheduled broadcasts, per-list unsubscribe, delivery events, and a server-rendered administration site.
+A small, Cloudflare-native mailing-list and campaign service with a Resend-compatible API. It supports named segments, recipient-facing Topics, contacts, multiple sending domains and senders, draft/immediate/scheduled broadcasts, email preferences, delivery events, and a server-rendered administration site.
 
 ## Architecture
 
@@ -136,7 +136,7 @@ For shared or automated deployments, store Terraform state in a remote backend w
 
 ## Resend SDK
 
-The supported v1 surface is Segments, Contacts, contact/segment membership, and Broadcasts. Configure the official SDK with this service's base URL:
+The supported v1 surface is Segments, Topics, Contacts, contact segment/topic membership, and Broadcasts. Configure the official SDK with this service's base URL:
 
 ```ts
 import { Resend } from "resend";
@@ -146,6 +146,11 @@ const resend = new Resend(process.env.MAIL_API_KEY, {
 });
 
 const segment = await resend.segments.create({ name: "Product updates" });
+const topic = await resend.topics.create({
+  name: "Product updates",
+  description: "News about product improvements",
+  defaultSubscription: "opt_in",
+});
 
 await resend.contacts.create({
   email: "reader@example.net",
@@ -155,6 +160,7 @@ await resend.contacts.create({
 await resend.broadcasts.create({
   name: "October update",
   segmentId: segment.data!.id,
+  topicId: topic.data!.id,
   from: "Example News <news@example.com>",
   subject: "Hello",
   html: "<p>Hello!</p>",
@@ -166,13 +172,17 @@ API keys use a `re_` prefix, are displayed once, and are stored only as SHA-256 
 
 Not implemented in v1: deprecated Audiences, transactional `/emails`, attachments, templates, broadcast duplication, recipient export, open/click tracking, public signup, inbound mail, and automations.
 
-## Unsubscribe and delivery behavior
+## Segments, Topics, and unsubscribe behavior
 
-- Every campaign gets text and HTML footers containing the selected sender's physical address and a list-specific unsubscribe link.
+- Segments are internal recipient groups used to choose who receives a broadcast. Removing a contact from a segment does not change that contact's email preferences.
+- Topics are recipient-facing preference categories. A contact can opt in or out of a Topic across all segments.
+- A broadcast tagged with a Topic gets a preference page with Topic toggles; RFC 8058 one-click unsubscribe opts the contact out of that Topic only.
+- A broadcast without a Topic gets a global-unsubscribe page; submitting it marks the contact globally unsubscribed from all broadcasts.
+- Every campaign gets text and HTML footers containing the selected sender's physical address and an unsubscribe link.
 - Each campaign uses the unsubscribe hostname mapped to its sender's domain in `.deployment.json`. Sending and test-send preflight fail if that mapping is missing.
 - Each email includes RFC 8058 `List-Unsubscribe` and `List-Unsubscribe-Post` headers.
-- Browser `GET` displays confirmation without changing state. `POST` performs an idempotent list-level unsubscribe.
-- An authenticated segment-add operation explicitly re-subscribes that membership.
+- Browser `GET` displays confirmation or preference toggles without changing state. `POST` changes only the requested Topic preference unless the recipient explicitly chooses global unsubscribe.
+- Authenticated admin and API operations can explicitly update global and Topic preferences.
 - Queue messages contain only a delivery ID. State and cancellation are rechecked immediately before sending.
 - Queue delivery is at least once. Atomic delivery claims remove normal duplicates, but a crash after Email Service accepts a message and before D1 records that result can still cause a rare duplicate.
 

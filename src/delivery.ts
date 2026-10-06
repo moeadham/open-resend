@@ -32,8 +32,12 @@ export async function enqueueBroadcast(env: Env, broadcastId: string): Promise<n
      WHERE sc.segment_id = ?
        AND sc.status = 'subscribed'
        AND c.unsubscribed = 0
-       AND c.suppression_reason IS NULL`,
-  ).bind(broadcastId, broadcastId, now, now, broadcast.segment_id).run();
+       AND c.suppression_reason IS NULL
+       AND (? IS NULL OR COALESCE(
+         (SELECT ct.subscription FROM contact_topics ct WHERE ct.topic_id = ? AND ct.contact_id = c.id),
+         (SELECT t.default_subscription FROM topics t WHERE t.id = ?)
+       ) = 'opt_in')`,
+  ).bind(broadcastId, broadcastId, now, now, broadcast.segment_id, broadcast.topic_id, broadcast.topic_id, broadcast.topic_id).run();
 
   const pending = await env.DB.prepare(
     "SELECT id FROM deliveries WHERE broadcast_id = ? AND status = 'pending' ORDER BY id",
@@ -90,15 +94,19 @@ export async function processDeliveryMessage(message: Message<DeliveryQueueMessa
   }
 
   const eligibility = await env.DB.prepare(
-    `SELECT sc.status AS membership_status, c.unsubscribed, c.suppression_reason
+    `SELECT sc.status AS membership_status, c.unsubscribed, c.suppression_reason,
+            CASE WHEN ? IS NULL THEN 'opt_in' ELSE COALESCE(ct.subscription, t.default_subscription, 'opt_out') END AS topic_subscription
      FROM segment_contacts sc JOIN contacts c ON c.id = sc.contact_id
+     LEFT JOIN topics t ON t.id = ?
+     LEFT JOIN contact_topics ct ON ct.topic_id = t.id AND ct.contact_id = c.id
      WHERE sc.segment_id = ? AND sc.contact_id = ?`,
-  ).bind(detail.segment_id, detail.contact_id).first<{
+  ).bind(detail.topic_id, detail.topic_id, detail.segment_id, detail.contact_id).first<{
     membership_status: string;
     unsubscribed: number;
     suppression_reason: string | null;
+    topic_subscription: "opt_in" | "opt_out";
   }>();
-  if (!eligibility || eligibility.membership_status !== "subscribed" || eligibility.unsubscribed || eligibility.suppression_reason) {
+  if (!eligibility || eligibility.membership_status !== "subscribed" || eligibility.unsubscribed || eligibility.suppression_reason || eligibility.topic_subscription !== "opt_in") {
     await setDeliveryStatus(env.DB, deliveryId, "suppressed", "Recipient is unsubscribed or suppressed.");
     message.ack();
     return;
@@ -125,8 +133,8 @@ export async function processDeliveryMessage(message: Message<DeliveryQueueMessa
   const token = randomToken();
   const tokenHash = await sha256(token);
   await env.DB.prepare(
-    "INSERT INTO unsubscribe_tokens (token_hash, segment_id, contact_id, created_at) VALUES (?, ?, ?, ?)",
-  ).bind(tokenHash, detail.segment_id, detail.contact_id, nowIso()).run();
+    "INSERT INTO unsubscribe_tokens (token_hash, contact_id, topic_id, created_at) VALUES (?, ?, ?, ?)",
+  ).bind(tokenHash, detail.contact_id, detail.topic_id, nowIso()).run();
   const unsubscribeUrl = `${unsubscribeUrlBase}/unsubscribe/${token}`;
 
   try {
@@ -219,7 +227,7 @@ function emailErrorCode(error: unknown): string | null {
 async function loadDelivery(db: D1Database, id: string): Promise<DeliveryDetail | null> {
   return db.prepare(
     `SELECT d.*, b.subject, b.html, b.text, b.preview_text, b.reply_to_json,
-            b.status AS broadcast_status, b.segment_id,
+            b.status AS broadcast_status, b.segment_id, b.topic_id,
             s.email AS sender_email, s.name AS sender_name, s.reply_to AS sender_reply_to,
             dom.name AS sender_domain, s.postal_address, s.active AS sender_active
      FROM deliveries d
