@@ -106,6 +106,36 @@ describe("Resend-compatible API", () => {
     const html = await response.text();
     expect(html).toContain("Send now");
     expect(html).toContain("Edit");
+    expect(html).not.toContain("Retry failures");
+
+    await env.DB.batch([
+      env.DB.prepare("UPDATE broadcasts SET status='sent',sent_at=?,updated_at=? WHERE id='broadcast-admin'").bind(now, now),
+      env.DB.prepare("INSERT INTO deliveries (id,broadcast_id,recipient,status,attempts,last_error,created_at,updated_at) VALUES ('delivery-admin','broadcast-admin','failed@example.com','failed',3,'Temporary failure',?,?)").bind(now, now),
+    ]);
+    const failed = await SELF.fetch("https://admin.example.com/broadcasts/broadcast-admin", { headers: { "Cf-Access-Jwt-Assertion": token } });
+    const failedHtml = await failed.text();
+    expect(failedHtml).toContain("Retry failures");
+    expect(failedHtml).toContain("responsive-table");
+  });
+
+  it("paginates broadcast administration at 40 rows", async () => {
+    const now = nowIso();
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO domains (id,name,created_at) VALUES ('domain-page','example.com',?)").bind(now),
+      env.DB.prepare("INSERT INTO senders (id,domain_id,email,name,postal_address,active,created_at,updated_at) VALUES ('sender-page','domain-page','pages@example.com','Pages','1 Main Street',1,?,?)").bind(now, now),
+      env.DB.prepare("INSERT INTO segments (id,name,created_at,updated_at) VALUES ('segment-page','Pagination',?,?)").bind(now, now),
+      ...Array.from({ length: 41 }, (_, index) => env.DB.prepare(
+        "INSERT INTO broadcasts (id,name,segment_id,sender_id,from_value,subject,html,text,status,created_at,updated_at) VALUES (?,?, 'segment-page','sender-page','Pages <pages@example.com>','Page','<p>Page</p>','Page','draft',?,?)",
+      ).bind(`broadcast-page-${index}`, `Page ${index}`, now, now)),
+    ]);
+    const token = await accessToken("replace-with-access-application-aud", "5 minutes");
+    const headers = { "Cf-Access-Jwt-Assertion": token };
+    const first = await (await SELF.fetch("https://admin.example.com/broadcasts", { headers })).text();
+    expect(first).toContain("Page 1 · 41 broadcasts · 40 items");
+    expect(first).toContain("Older");
+    const second = await (await SELF.fetch("https://admin.example.com/broadcasts?page=2", { headers })).text();
+    expect(second).toContain("Page 2 · 41 broadcasts · 40 items");
+    expect(second).toContain("Newer");
   });
 
   it("rejects requests without an API key", async () => {
