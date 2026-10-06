@@ -1,6 +1,6 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { Context, Next } from "hono";
-import { AppError, nowIso, sha256 } from "./lib";
+import { AppError, nowIso, parseUnsubscribeHostnames, sha256 } from "./lib";
 
 type AppContext = Context<{ Bindings: Env }>;
 
@@ -15,7 +15,13 @@ export function isAdminRequest(request: Request, env: Env): boolean {
 
 export function isApiRequest(request: Request, env: Env): boolean {
   const host = hostname(request);
-  return host === env.API_HOSTNAME.toLowerCase() || (isLocalHost(host) && env.ENVIRONMENT !== "production");
+  if (host === env.API_HOSTNAME.toLowerCase() || (isLocalHost(host) && env.ENVIRONMENT !== "production")) return true;
+  if (!new URL(request.url).pathname.startsWith("/unsubscribe/")) return false;
+  try {
+    return Object.values(parseUnsubscribeHostnames(env.UNSUBSCRIBE_HOSTNAMES)).includes(host);
+  } catch {
+    return false;
+  }
 }
 
 function isLocalHost(host: string): boolean {

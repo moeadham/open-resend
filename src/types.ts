@@ -84,6 +84,7 @@ export type DeliveryDetail = {
   sender_email: string;
   sender_name: string;
   sender_reply_to: string | null;
+  sender_domain: string;
   postal_address: string;
   sender_active: number;
 };

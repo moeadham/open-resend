@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildCampaignMime } from "../src/delivery";
-import { parseFrom, randomToken, stripHtml } from "../src/lib";
+import { parseFrom, randomToken, stripHtml, unsubscribeBaseUrl } from "../src/lib";
 import type { DeliveryDetail } from "../src/types";
 
 describe("mail helpers", () => {
@@ -35,6 +35,7 @@ describe("mail helpers", () => {
       sender_email: "news@example.com",
       sender_name: "Example News",
       sender_reply_to: "replies@example.com",
+      sender_domain: "example.com",
       postal_address: "1 Main Street\nTokyo",
       sender_active: 1,
     };
@@ -46,5 +47,14 @@ describe("mail helpers", () => {
     expect(raw).toContain("Reply-To: <replies@example.com>");
     expect(raw).toContain("1 Main Street");
     expect(raw.indexOf("text/plain")).toBeLessThan(raw.indexOf("text/html"));
+  });
+
+  it("selects an unsubscribe hostname by sending domain", () => {
+    const configured = JSON.stringify({
+      "example.com": "mail.example.com",
+      "another-domain.com": "mail.another-domain.com",
+    });
+    expect(unsubscribeBaseUrl(configured, "EXAMPLE.COM")).toBe("https://mail.example.com");
+    expect(() => unsubscribeBaseUrl(configured, "missing.example")).toThrow("No unsubscribe hostname is configured");
   });
 });

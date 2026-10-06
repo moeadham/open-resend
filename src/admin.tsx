@@ -2,7 +2,7 @@ import { Hono, type Context } from "hono";
 import type { Child } from "hono/jsx";
 import { requireAccess, requireSameOrigin } from "./auth";
 import { enqueueBroadcast, retryFailedDeliveries, sendTestEmail, validateBroadcastReady } from "./delivery";
-import { AppError, appErrorResponse, assertIsoFuture, escapeHtml, isEmail, normalizeEmail, nowIso, randomToken, sha256, stripHtml } from "./lib";
+import { AppError, appErrorResponse, assertIsoFuture, escapeHtml, isEmail, normalizeEmail, nowIso, parseUnsubscribeHostnames, randomToken, sha256, stripHtml } from "./lib";
 import type { BroadcastRow, SegmentRow, SenderRow } from "./types";
 
 type Bindings = { Bindings: Env };
@@ -178,7 +178,7 @@ adminApp.get("/broadcasts/:id", async (c) => {
 adminApp.post("/broadcasts/:id/send", async (c) => { await enqueueBroadcast(c.env, c.req.param("id")); return c.redirect(`/broadcasts/${c.req.param("id")}`, 303); });
 adminApp.post("/broadcasts/:id/schedule", async (c) => {
   const form = await c.req.parseBody(); const scheduledAt = assertIsoFuture(textField(form.scheduled_at, "scheduled_at", 100));
-  await validateBroadcastReady(c.env.DB, c.req.param("id"));
+  await validateBroadcastReady(c.env, c.req.param("id"));
   const broadcast = await c.env.DB.prepare("SELECT status FROM broadcasts WHERE id=?").bind(c.req.param("id")).first<{ status: string }>();
   if (!broadcast || broadcast.status !== "draft") throw new AppError(409, "conflict", "Only draft broadcasts can be scheduled.");
   await c.env.DB.prepare("UPDATE broadcasts SET status='scheduled',scheduled_at=?,updated_at=? WHERE id=?").bind(scheduledAt, nowIso(), c.req.param("id")).run();
@@ -193,7 +193,7 @@ adminApp.post("/broadcasts/:id/cancel", async (c) => {
 adminApp.post("/broadcasts/:id/test", async (c) => {
   const form = await c.req.parseBody(); const to = normalizeEmail(textField(form.email, "email", 320));
   if (!isEmail(to)) throw new AppError(422, "validation_error", "Test recipient is invalid.");
-  const row = await c.env.DB.prepare(`SELECT b.subject,b.html,b.text,s.email,s.name,s.reply_to,s.postal_address FROM broadcasts b JOIN senders s ON s.id=b.sender_id WHERE b.id=?`).bind(c.req.param("id")).first<{ subject: string; html: string | null; text: string | null; email: string; name: string; reply_to: string | null; postal_address: string }>();
+  const row = await c.env.DB.prepare(`SELECT b.subject,b.html,b.text,s.email,s.name,s.reply_to,s.postal_address,d.name AS domain FROM broadcasts b JOIN senders s ON s.id=b.sender_id JOIN domains d ON d.id=s.domain_id WHERE b.id=?`).bind(c.req.param("id")).first<{ subject: string; html: string | null; text: string | null; email: string; name: string; reply_to: string | null; postal_address: string; domain: string }>();
   if (!row) throw new AppError(404, "not_found", "Broadcast not found.");
   await sendTestEmail(c.env, { to, sender: row, subject: row.subject, html: row.html ?? `<p>${escapeHtml(row.text)}</p>`, text: row.text });
   return c.redirect(`/broadcasts/${c.req.param("id")}`, 303);
@@ -202,7 +202,8 @@ adminApp.post("/broadcasts/:id/retry", async (c) => { await retryFailedDeliverie
 
 adminApp.get("/senders", async (c) => {
   const [domains, senders] = await Promise.all([c.env.DB.prepare("SELECT * FROM domains ORDER BY name").all<DomainRow>(), c.env.DB.prepare("SELECT s.*,d.name AS domain_name FROM senders s JOIN domains d ON d.id=s.domain_id ORDER BY s.created_at DESC").all<SenderRow & { domain_name: string }>()]);
-  return c.html(<Layout title="Domains"><PageHead title="Domains & senders"><><ModalTrigger target="add-sender">＋ Add sender</ModalTrigger><SenderModal id="add-sender" domains={domains.results} returnTo="/senders"/></></PageHead><div class="panel"><form method="post" action="/senders/domains" class="inline-form"><input name="domain" placeholder="Register an onboarded domain" required/><button>Register domain</button></form></div><div class="table-shell"><table><thead><tr><th>Sender</th><th>Domain</th><th>Reply-to</th><th>Postal address</th><th>Status</th></tr></thead><tbody>{senders.results.map((sender) => <tr><td><div class="row-title"><span class="row-icon">@</span><span>{sender.name}<small>{sender.email}</small></span></div></td><td>{sender.domain_name}</td><td>{sender.reply_to ?? "—"}</td><td>{sender.postal_address}</td><td><span class={sender.active ? "badge good" : "badge bad"}>{sender.active ? "Active" : "Inactive"}</span></td></tr>)}</tbody></table>{!senders.results.length && <div class="empty">Register a domain, then add a sender.</div>}</div></Layout>);
+  const unsubscribeHostnames = parseUnsubscribeHostnames(c.env.UNSUBSCRIBE_HOSTNAMES);
+  return c.html(<Layout title="Domains"><PageHead title="Domains & senders"><><ModalTrigger target="add-sender">＋ Add sender</ModalTrigger><SenderModal id="add-sender" domains={domains.results} returnTo="/senders"/></></PageHead><div class="panel"><form method="post" action="/senders/domains" class="inline-form"><input name="domain" placeholder="Register an onboarded domain" required/><button>Register domain</button></form><p class="muted">Unsubscribe hostnames are read from <code>.deployment.json</code> and applied by Wrangler.</p></div><div class="table-shell"><table><thead><tr><th>Sending domain</th><th>Unsubscribe hostname</th><th>Status</th></tr></thead><tbody>{domains.results.map((domain) => <tr><td>{domain.name}</td><td>{unsubscribeHostnames[domain.name] ?? "—"}</td><td><span class={unsubscribeHostnames[domain.name] ? "badge good" : "badge bad"}>{unsubscribeHostnames[domain.name] ? "Configured" : "Missing"}</span></td></tr>)}</tbody></table>{!domains.results.length && <div class="empty">No sending domains registered.</div>}</div><div class="table-shell"><table><thead><tr><th>Sender</th><th>Domain</th><th>Reply-to</th><th>Postal address</th><th>Status</th></tr></thead><tbody>{senders.results.map((sender) => <tr><td><div class="row-title"><span class="row-icon">@</span><span>{sender.name}<small>{sender.email}</small></span></div></td><td>{sender.domain_name}</td><td>{sender.reply_to ?? "—"}</td><td>{sender.postal_address}</td><td><span class={sender.active ? "badge good" : "badge bad"}>{sender.active ? "Active" : "Inactive"}</span></td></tr>)}</tbody></table>{!senders.results.length && <div class="empty">Register a domain, then add a sender.</div>}</div></Layout>);
 });
 adminApp.post("/senders/domains", async (c) => {
   const form = await c.req.parseBody(); const domain = textField(form.domain, "domain", 253).toLowerCase().replace(/^@/, "");

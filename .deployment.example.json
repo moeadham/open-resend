@@ -1,6 +1,10 @@
 {
   "workerName": "cloudflare-resend",
   "apiHostname": "mail-api.example.com",
+  "unsubscribeHostnames": {
+    "example.com": "mail.example.com",
+    "another-domain.com": "mail.another-domain.com"
+  },
   "d1DatabaseId": "replace-with-d1-database-id",
   "d1DatabaseName": "cloudflare-resend",
   "environment": "production",

@@ -65,6 +65,14 @@ describe("Resend-compatible API", () => {
     await expect(response.json()).resolves.toMatchObject({ name: "invalid_api_key", statusCode: 401 });
   });
 
+  it("limits unsubscribe hostnames to public unsubscribe routes", async () => {
+    const apiResponse = await SELF.fetch("https://api.example.com/segments");
+    expect(apiResponse.status).toBe(401);
+
+    const alternateApiResponse = await SELF.fetch("https://mail.example.com/segments");
+    expect(alternateApiResponse.status).toBe(404);
+  });
+
   it("supports segments through the official Resend SDK", async () => {
     const resend = new Resend(API_KEY, { baseUrl: "https://api.example.com" });
     const created = await resend.segments.create({ name: "Customers" });
@@ -144,6 +152,21 @@ describe("Resend-compatible API", () => {
     expect(posted.status).toBe(200);
     const after = await env.DB.prepare("SELECT status FROM segment_contacts WHERE segment_id = 's1' AND contact_id = 'c1'").first<{ status: string }>();
     expect(after?.status).toBe("unsubscribed");
+  });
+
+  it("serves unsubscribe links on a configured sender-domain hostname only", async () => {
+    const now = nowIso();
+    const token = "domain-unsubscribe-token";
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO segments (id, name, created_at, updated_at) VALUES ('s2', 'Other news', ?, ?)").bind(now, now),
+      env.DB.prepare("INSERT INTO contacts (id, email, created_at, updated_at) VALUES ('c2', 'other@example.net', ?, ?)").bind(now, now),
+      env.DB.prepare("INSERT INTO segment_contacts (segment_id, contact_id, status, subscribed_at, updated_at) VALUES ('s2', 'c2', 'subscribed', ?, ?)").bind(now, now),
+      env.DB.prepare("INSERT INTO unsubscribe_tokens (token_hash, segment_id, contact_id, created_at) VALUES (?, 's2', 'c2', ?)").bind(await sha256(token), now),
+    ]);
+
+    expect((await SELF.fetch(`https://mail.example.com/unsubscribe/${token}`)).status).toBe(200);
+    expect((await SELF.fetch("https://api.example.com/segments")).status).toBe(401);
+    expect((await SELF.fetch("https://unknown.example.com/unsubscribe/domain-unsubscribe-token")).status).toBe(404);
   });
 });
 

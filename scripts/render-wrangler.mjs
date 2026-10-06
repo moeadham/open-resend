@@ -14,7 +14,12 @@ const adminHostname = output(terraformOutputs, "admin_hostname");
 const accessAud = output(terraformOutputs, "access_aud");
 const accessTeamDomain = output(terraformOutputs, "access_team_domain");
 const apiHostname = requireHostname(deployment.apiHostname, "apiHostname");
+const unsubscribeHostnames = requireHostnameMap(deployment.unsubscribeHostnames, "unsubscribeHostnames");
 requireHostname(adminHostname, "Terraform output admin_hostname");
+
+for (const hostname of Object.values(unsubscribeHostnames)) {
+  if (hostname === adminHostname) fail("An unsubscribe hostname cannot be the Access-protected admin hostname.");
+}
 
 if (!isUuid(deployment.d1DatabaseId) || deployment.d1DatabaseId === "00000000-0000-0000-0000-000000000000") {
   fail("d1DatabaseId must be the UUID of a provisioned D1 database.");
@@ -27,10 +32,11 @@ const emailEventsQueue = optionalString(deployment.emailEventsQueue, "cloudflare
 const config = {
   ...base,
   name: optionalString(deployment.workerName, "cloudflare-resend"),
-  routes: [
+  routes: deduplicateRoutes([
     { pattern: adminHostname, custom_domain: true },
     { pattern: apiHostname, custom_domain: true },
-  ],
+    ...Object.values(unsubscribeHostnames).map((pattern) => ({ pattern, custom_domain: true })),
+  ]),
   d1_databases: base.d1_databases.map((database) =>
     database.binding === "DB"
       ? {
@@ -54,7 +60,7 @@ const config = {
     ...base.vars,
     ADMIN_HOSTNAME: adminHostname,
     API_HOSTNAME: apiHostname,
-    PUBLIC_BASE_URL: `https://${apiHostname}`,
+    UNSUBSCRIBE_HOSTNAMES: JSON.stringify(unsubscribeHostnames),
     ACCESS_TEAM_DOMAIN: accessTeamDomain,
     ACCESS_AUD: accessAud,
     ENVIRONMENT: optionalString(deployment.environment, "production"),
@@ -104,6 +110,27 @@ function requireHostname(value, name) {
     fail(`${name} must be a hostname without a scheme, path, or wildcard.`);
   }
   return value.toLowerCase();
+}
+
+function requireHostnameMap(value, name) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    fail(`${name} must be an object mapping sending domains to unsubscribe hostnames.`);
+  }
+  const result = {};
+  for (const [sendingDomain, unsubscribeHostname] of Object.entries(value)) {
+    const normalizedSendingDomain = requireHostname(sendingDomain, `${name} sending domain`);
+    result[normalizedSendingDomain] = requireHostname(unsubscribeHostname, `${name}.${sendingDomain}`);
+  }
+  return result;
+}
+
+function deduplicateRoutes(routes) {
+  const seen = new Set();
+  return routes.filter(({ pattern }) => {
+    if (seen.has(pattern)) return false;
+    seen.add(pattern);
+    return true;
+  });
 }
 
 function optionalString(value, fallback) {

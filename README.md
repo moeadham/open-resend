@@ -4,7 +4,7 @@ A small, Cloudflare-native mailing-list and campaign service with a Resend-compa
 
 ## Architecture
 
-- One Worker dispatches by hostname: `ADMIN_HOSTNAME` serves the browser UI and `API_HOSTNAME` serves the API and unsubscribe pages.
+- One Worker dispatches by hostname: `ADMIN_HOSTNAME` serves the browser UI, `API_HOSTNAME` serves the Resend-compatible API, and deployment-configured unsubscribe hostnames serve public unsubscribe pages.
 - The complete admin hostname is protected by a Cloudflare Zero Trust Access self-hosted application. The Worker also verifies the Access JWT.
 - D1 stores application data, Queues fan out one message per recipient, and one Durable Object alarm is used per scheduled broadcast.
 - Cloudflare Email Service is the only outbound transport.
@@ -93,7 +93,21 @@ export CLOUDFLARE_API_TOKEN="paste-token-here"
    npx wrangler queues create cloudflare-resend-email-events
    ```
 
-5. Copy `.deployment.example.json` to `.deployment.json`, enter the API hostname and D1 database ID, then render the deploy-only Wrangler configuration:
+5. Copy `.deployment.example.json` to `.deployment.json`, enter the API hostname and D1 database ID, and map each sending domain to its unsubscribe hostname:
+
+   ```json
+   {
+     "apiHostname": "mail-api.example.com",
+     "unsubscribeHostnames": {
+       "example.com": "mail.example.com",
+       "another-domain.com": "mail.another-domain.com"
+     }
+   }
+   ```
+
+   The keys must match the sending domains registered in the admin. Every value becomes a Wrangler-managed Worker Custom Domain, and campaigns select the hostname associated with their sender domain. These are configured in the deployment file as requested, but Cloudflare creates the DNS records directly; do not create conflicting CNAME records manually.
+
+   Render the deploy-only Wrangler configuration and apply D1 migrations:
 
    ```bash
    cp .deployment.example.json .deployment.json
@@ -155,6 +169,7 @@ Not implemented in v1: deprecated Audiences, transactional `/emails`, attachment
 ## Unsubscribe and delivery behavior
 
 - Every campaign gets text and HTML footers containing the selected sender's physical address and a list-specific unsubscribe link.
+- Each campaign uses the unsubscribe hostname mapped to its sender's domain in `.deployment.json`. Sending and test-send preflight fail if that mapping is missing.
 - Each email includes RFC 8058 `List-Unsubscribe` and `List-Unsubscribe-Post` headers.
 - Browser `GET` displays confirmation without changing state. `POST` performs an idempotent list-level unsubscribe.
 - An authenticated segment-add operation explicitly re-subscribes that membership.

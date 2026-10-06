@@ -28,6 +28,9 @@ try {
   assert(config.name === "cloudflare-resend-test", "worker name was not rendered");
   assert(config.routes[0].pattern === "mail-admin.example.com", "admin route was not rendered from Terraform");
   assert(config.routes[1].pattern === "mail-api.example.com", "API route was not rendered from deployment settings");
+  assert(config.routes[2].pattern === "mail.example.com", "first unsubscribe route was not rendered");
+  assert(config.routes[3].pattern === "mail.another-domain.com", "second unsubscribe route was not rendered");
+  assert(config.vars.UNSUBSCRIBE_HOSTNAMES === JSON.stringify({ "example.com": "mail.example.com", "another-domain.com": "mail.another-domain.com" }), "unsubscribe hostname map was not rendered");
   assert(config.vars.ACCESS_AUD === "example-access-audience", "Access audience was not rendered");
   assert(config.vars.ACCESS_TEAM_DOMAIN === "example.cloudflareaccess.com", "Access team domain was not rendered");
   assert(config.vars.ALLOW_LOCAL_ADMIN === "false", "production config must disable the local bypass");

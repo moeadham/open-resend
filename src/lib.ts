@@ -87,6 +87,33 @@ export function stripHtml(value: string): string {
     .trim();
 }
 
+export function parseUnsubscribeHostnames(value: string): Record<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not an object");
+    const result: Record<string, string> = {};
+    for (const [sendingDomain, hostname] of Object.entries(parsed)) {
+      if (typeof hostname !== "string" || !isHostname(sendingDomain) || !isHostname(hostname)) throw new Error("invalid hostname");
+      result[sendingDomain.toLowerCase()] = hostname.toLowerCase();
+    }
+    return result;
+  } catch {
+    throw new AppError(500, "application_error", "The unsubscribe hostname configuration is invalid.");
+  }
+}
+
+export function unsubscribeBaseUrl(value: string, sendingDomain: string): string {
+  const hostname = parseUnsubscribeHostnames(value)[sendingDomain.toLowerCase()];
+  if (!hostname) {
+    throw new AppError(422, "validation_error", `No unsubscribe hostname is configured for ${sendingDomain}.`);
+  }
+  return `https://${hostname}`;
+}
+
+function isHostname(value: string): boolean {
+  return /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/i.test(value);
+}
+
 export function parseFrom(value: string): { email: string; name: string | null } {
   const match = value.match(/^\s*(?:([^<>]+?)\s*)?<([^<>\s]+@[^<>\s]+)>\s*$/);
   if (match) return { name: match[1]?.trim() || null, email: normalizeEmail(match[2] ?? "") };

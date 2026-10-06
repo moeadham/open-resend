@@ -1,6 +1,6 @@
 import { EmailMessage } from "cloudflare:email";
 import { createMimeMessage, Mailbox } from "mimetext/browser";
-import { AppError, escapeHtml, logError, nowIso, randomToken, sha256, stripHtml } from "./lib";
+import { AppError, escapeHtml, logError, nowIso, randomToken, sha256, stripHtml, unsubscribeBaseUrl } from "./lib";
 import type { BroadcastRow, DeliveryDetail, DeliveryQueueMessage, EmailEventMessage } from "./types";
 
 const TRANSIENT_EMAIL_CODES = new Set([
@@ -15,7 +15,7 @@ export async function enqueueBroadcast(env: Env, broadcastId: string): Promise<n
     .bind(broadcastId).first<BroadcastRow>();
   if (!broadcast) throw new AppError(404, "not_found", "Broadcast not found.");
   if (["cancelled", "sent"].includes(broadcast.status)) return 0;
-  await validateBroadcastReady(env.DB, broadcastId);
+  await validateBroadcastReady(env, broadcastId);
 
   const now = nowIso();
   await env.DB.prepare(
@@ -104,6 +104,15 @@ export async function processDeliveryMessage(message: Message<DeliveryQueueMessa
     return;
   }
 
+  let unsubscribeUrlBase: string;
+  try {
+    unsubscribeUrlBase = unsubscribeBaseUrl(env.UNSUBSCRIBE_HOSTNAMES, detail.sender_domain);
+  } catch (error) {
+    await setDeliveryStatus(env.DB, deliveryId, "failed", error instanceof Error ? error.message : "Invalid unsubscribe hostname configuration.");
+    message.ack();
+    return;
+  }
+
   const claimed = await env.DB.prepare(
     `UPDATE deliveries SET status = 'sending', attempts = attempts + 1, updated_at = ?
      WHERE id = ? AND status IN ('pending', 'enqueued', 'deferred', 'failed')`,
@@ -118,7 +127,7 @@ export async function processDeliveryMessage(message: Message<DeliveryQueueMessa
   await env.DB.prepare(
     "INSERT INTO unsubscribe_tokens (token_hash, segment_id, contact_id, created_at) VALUES (?, ?, ?, ?)",
   ).bind(tokenHash, detail.segment_id, detail.contact_id, nowIso()).run();
-  const unsubscribeUrl = `${env.PUBLIC_BASE_URL.replace(/\/$/, "")}/unsubscribe/${token}`;
+  const unsubscribeUrl = `${unsubscribeUrlBase}/unsubscribe/${token}`;
 
   try {
     const raw = buildCampaignMime(detail, unsubscribeUrl);
@@ -186,15 +195,16 @@ function broadcastReplyTo(value: string | null): string | null {
   }
 }
 
-export async function validateBroadcastReady(db: D1Database, broadcastId: string): Promise<void> {
-  const row = await db.prepare(
-    `SELECT b.id, b.subject, b.html, b.text, s.active, s.postal_address
-     FROM broadcasts b JOIN senders s ON s.id = b.sender_id WHERE b.id = ?`,
-  ).bind(broadcastId).first<{ id: string; subject: string; html: string | null; text: string | null; active: number; postal_address: string }>();
+export async function validateBroadcastReady(env: Env, broadcastId: string): Promise<void> {
+  const row = await env.DB.prepare(
+    `SELECT b.id, b.subject, b.html, b.text, s.active, s.postal_address, d.name AS sender_domain
+     FROM broadcasts b JOIN senders s ON s.id = b.sender_id JOIN domains d ON d.id = s.domain_id WHERE b.id = ?`,
+  ).bind(broadcastId).first<{ id: string; subject: string; html: string | null; text: string | null; active: number; postal_address: string; sender_domain: string }>();
   if (!row) throw new AppError(404, "not_found", "Broadcast not found.");
   if (!row.active) throw new AppError(422, "validation_error", "The selected sender is inactive.");
   if (!row.postal_address.trim()) throw new AppError(422, "validation_error", "The selected sender requires a postal address.");
   if (!row.subject.trim() || (!row.html && !row.text)) throw new AppError(422, "validation_error", "The broadcast is incomplete.");
+  unsubscribeBaseUrl(env.UNSUBSCRIBE_HOSTNAMES, row.sender_domain);
 }
 
 function rejectHeaderBreaks(value: string, field: string): void {
@@ -211,10 +221,11 @@ async function loadDelivery(db: D1Database, id: string): Promise<DeliveryDetail 
     `SELECT d.*, b.subject, b.html, b.text, b.preview_text, b.reply_to_json,
             b.status AS broadcast_status, b.segment_id,
             s.email AS sender_email, s.name AS sender_name, s.reply_to AS sender_reply_to,
-            s.postal_address, s.active AS sender_active
+            dom.name AS sender_domain, s.postal_address, s.active AS sender_active
      FROM deliveries d
      JOIN broadcasts b ON b.id = d.broadcast_id
      JOIN senders s ON s.id = b.sender_id
+     JOIN domains dom ON dom.id = s.domain_id
      WHERE d.id = ?`,
   ).bind(id).first<DeliveryDetail>();
 }
@@ -284,9 +295,9 @@ export async function processDeadLetter(batch: MessageBatch<DeliveryQueueMessage
 
 export async function sendTestEmail(
   env: Env,
-  input: { to: string; sender: { email: string; name: string; reply_to: string | null; postal_address: string }; subject: string; html: string; text?: string | null },
+  input: { to: string; sender: { email: string; name: string; reply_to: string | null; postal_address: string; domain: string }; subject: string; html: string; text?: string | null },
 ): Promise<string> {
-  const unsubscribeUrl = `${env.PUBLIC_BASE_URL.replace(/\/$/, "")}/unsubscribe/test`;
+  const unsubscribeUrl = `${unsubscribeBaseUrl(env.UNSUBSCRIBE_HOSTNAMES, input.sender.domain)}/unsubscribe/test`;
   const mime = createMimeMessage();
   mime.setSender({ name: input.sender.name, addr: input.sender.email });
   mime.setRecipient(input.to);
