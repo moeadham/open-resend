@@ -59,6 +59,55 @@ describe("Resend-compatible API", () => {
     expect((await SELF.fetch("https://admin.example.com/", { headers: { "Cf-Access-Jwt-Assertion": "not-a-jwt" } })).status).toBe(401);
   });
 
+  it("provides contact detail and segment membership actions in the admin", async () => {
+    const now = nowIso();
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO contacts (id,email,created_at,updated_at) VALUES ('contact-admin','person@example.net',?,?)").bind(now, now),
+      env.DB.prepare("INSERT INTO segments (id,name,created_at,updated_at) VALUES ('segment-admin','Updates',?,?)").bind(now, now),
+    ]);
+    const token = await accessToken("replace-with-access-application-aud", "5 minutes");
+    const authHeaders = { "Cf-Access-Jwt-Assertion": token };
+    const detail = await SELF.fetch("https://admin.example.com/contacts/contact-admin", { headers: authHeaders });
+    expect(detail.status).toBe(200);
+    const detailHtml = await detail.text();
+    expect(detailHtml).toContain("Contact details");
+    expect(detailHtml).toContain("Add or resubscribe");
+
+    const added = await SELF.fetch("https://admin.example.com/contacts/contact-admin/segments", {
+      method: "POST",
+      redirect: "manual",
+      headers: { ...authHeaders, Origin: "https://admin.example.com" },
+      body: new URLSearchParams({ segment_id: "segment-admin" }),
+    });
+    expect(added.status).toBe(303);
+    expect((await env.DB.prepare("SELECT status FROM segment_contacts WHERE contact_id='contact-admin' AND segment_id='segment-admin'").first<{ status: string }>())?.status).toBe("subscribed");
+
+    const unsubscribed = await SELF.fetch("https://admin.example.com/contacts/contact-admin/segments/segment-admin", {
+      method: "POST",
+      redirect: "manual",
+      headers: { ...authHeaders, Origin: "https://admin.example.com" },
+      body: new URLSearchParams({ status: "unsubscribed" }),
+    });
+    expect(unsubscribed.status).toBe(303);
+    expect((await env.DB.prepare("SELECT status FROM segment_contacts WHERE contact_id='contact-admin' AND segment_id='segment-admin'").first<{ status: string }>())?.status).toBe("unsubscribed");
+  });
+
+  it("shows an explicit send action when reviewing a draft broadcast", async () => {
+    const now = nowIso();
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO domains (id,name,created_at) VALUES ('domain-admin','example.com',?)").bind(now),
+      env.DB.prepare("INSERT INTO senders (id,domain_id,email,name,postal_address,active,created_at,updated_at) VALUES ('sender-admin','domain-admin','news@example.com','Example News','1 Main Street',1,?,?)").bind(now, now),
+      env.DB.prepare("INSERT INTO segments (id,name,created_at,updated_at) VALUES ('segment-broadcast','Readers',?,?)").bind(now, now),
+      env.DB.prepare("INSERT INTO broadcasts (id,name,segment_id,sender_id,from_value,subject,html,text,status,created_at,updated_at) VALUES ('broadcast-admin','Draft update','segment-broadcast','sender-admin','Example News <news@example.com>','Hello','<p>Hello</p>','Hello','draft',?,?)").bind(now, now),
+    ]);
+    const token = await accessToken("replace-with-access-application-aud", "5 minutes");
+    const response = await SELF.fetch("https://admin.example.com/broadcasts/broadcast-admin", { headers: { "Cf-Access-Jwt-Assertion": token } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("Send now");
+    expect(html).toContain("Edit");
+  });
+
   it("rejects requests without an API key", async () => {
     const response = await SELF.fetch("https://api.example.com/segments");
     expect(response.status).toBe(401);

@@ -24,6 +24,23 @@ for (const form of document.querySelectorAll<HTMLFormElement>("form[data-schedul
   });
 }
 
+for (const row of document.querySelectorAll<HTMLElement>("[data-row-href]")) {
+  const open = (): void => {
+    const href = row.dataset.rowHref;
+    if (href) window.location.assign(href);
+  };
+  row.addEventListener("click", (event) => {
+    if (event.target instanceof Element && event.target.closest("a,button,input,select,textarea,form")) return;
+    open();
+  });
+  row.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      open();
+    }
+  });
+}
+
 function openDialog(id: string): void {
   const dialog = document.getElementById(id);
   if (!(dialog instanceof HTMLDialogElement)) return;
