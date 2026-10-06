@@ -27,6 +27,14 @@ export const apiApp = new Hono<Bindings>();
 apiApp.onError((error) => appErrorResponse(error));
 apiApp.notFound(() => Response.json({ name: "not_found", message: "Route not found.", statusCode: 404 }, { status: 404 }));
 
+apiApp.use("/unsubscribe/*", async (c, next) => {
+  await next();
+  c.header("Cache-Control", "no-store");
+  c.header("Referrer-Policy", "no-referrer");
+  c.header("X-Content-Type-Options", "nosniff");
+  c.header("X-Frame-Options", "DENY");
+});
+
 apiApp.get("/unsubscribe/:token", async (c) => {
   if (c.req.param("token") === "test") return c.html(unsubscribePage({
     title: "Do you want to unsubscribe from this mailing list?",

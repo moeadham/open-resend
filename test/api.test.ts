@@ -224,6 +224,9 @@ describe("Resend-compatible API", () => {
 
     const page = await SELF.fetch(`https://api.example.com/unsubscribe/${token}`);
     expect(page.status).toBe(200);
+    expect(page.headers.get("Cache-Control")).toBe("no-store");
+    expect(page.headers.get("Referrer-Policy")).toBe("no-referrer");
+    expect(page.headers.get("X-Frame-Options")).toBe("DENY");
     const pageHtml = await page.text();
     expect(pageHtml).toContain("Do you want to unsubscribe from News?");
     expect(pageHtml).toContain("Confirm the email preferences for person@example.net.");
