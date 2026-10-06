@@ -102,6 +102,16 @@ export function parseUnsubscribeHostnames(value: string): Record<string, string>
   }
 }
 
+export function parseSendingDomains(value: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed) || parsed.some((domain) => typeof domain !== "string" || !isHostname(domain))) throw new Error("invalid domains");
+    return [...new Set(parsed.map((domain) => domain.toLowerCase()))].sort();
+  } catch {
+    throw new AppError(500, "application_error", "The Cloudflare Email Sending domain configuration is invalid.");
+  }
+}
+
 export function unsubscribeBaseUrl(value: string, sendingDomain: string): string {
   const hostname = parseUnsubscribeHostnames(value)[sendingDomain.toLowerCase()];
   if (!hostname) {

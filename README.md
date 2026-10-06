@@ -105,7 +105,9 @@ export CLOUDFLARE_API_TOKEN="paste-token-here"
    }
    ```
 
-   The keys must match the sending domains registered in the admin. Every value becomes a Wrangler-managed Worker Custom Domain, and campaigns select the hostname associated with their sender domain. These are configured in the deployment file as requested, but Cloudflare creates the DNS records directly; do not create conflicting CNAME records manually.
+   Every value becomes a Wrangler-managed Worker Custom Domain, and campaigns select the hostname associated with their sender domain. Cloudflare creates the DNS records directly; do not create conflicting CNAME records manually.
+
+   During deployment, the configuration generator runs `wrangler email sending list` and publishes every enabled Email Sending domain to the Worker. The admin therefore shows the Cloudflare account's enabled domains automatically and does not provide a separate domain-registration action. Re-run deployment after onboarding another domain so the Worker receives the refreshed list.
 
    Render the deploy-only Wrangler configuration and apply D1 migrations:
 
@@ -130,7 +132,7 @@ export CLOUDFLARE_API_TOKEN="paste-token-here"
    npm run deploy
    ```
 
-After signing into the admin hostname through Access, register the already-onboarded domains and sender addresses, then create the first API key from the **API keys** page.
+After signing into the admin hostname through Access, add sender identities for the automatically discovered Email Sending domains, then create the first API key from the **API keys** page.
 
 For shared or automated deployments, store Terraform state in a remote backend with locking rather than committing local state. A manually created Access application for the same hostname must be removed before applying this configuration; the project intentionally supports one Terraform-owned installation path rather than migration of dashboard-managed resources.
 

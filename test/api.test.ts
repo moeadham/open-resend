@@ -103,6 +103,29 @@ describe("Resend-compatible API", () => {
     expect((await env.DB.prepare("SELECT subscription FROM contact_topics WHERE contact_id='contact-admin' AND topic_id='topic-admin'").first<{ subscription: string }>())?.subscription).toBe("opt_out");
   });
 
+  it("lists Cloudflare Email Sending domains and creates senders without manual domain registration", async () => {
+    const token = await accessToken("replace-with-access-application-aud", "5 minutes");
+    const authHeaders = { "Cf-Access-Jwt-Assertion": token };
+    const page = await SELF.fetch("https://admin.example.com/senders", { headers: authHeaders });
+    const html = await page.text();
+    expect(html).toContain("example.com");
+    expect(html).toContain("Add sender");
+    expect(html).not.toContain("Register domain");
+
+    const created = await SELF.fetch("https://admin.example.com/senders", {
+      method: "POST", redirect: "manual", headers: { ...authHeaders, Origin: "https://admin.example.com" },
+      body: new URLSearchParams({ domain: "example.com", email: "news@example.com", name: "News", postal_address: "1 Main Street", return_to: "/senders" }),
+    });
+    expect(created.status).toBe(303);
+    expect(await env.DB.prepare("SELECT d.name FROM senders s JOIN domains d ON d.id=s.domain_id WHERE s.email='news@example.com'").first()).toMatchObject({ name: "example.com" });
+
+    const invalid = await SELF.fetch("https://admin.example.com/senders", {
+      method: "POST", headers: { ...authHeaders, Origin: "https://admin.example.com" },
+      body: new URLSearchParams({ domain: "unavailable.example", email: "news@unavailable.example", name: "News", postal_address: "1 Main Street" }),
+    });
+    expect(invalid.status).toBe(422);
+  });
+
   it("shows an explicit send action when reviewing a draft broadcast", async () => {
     const now = nowIso();
     await env.DB.batch([
