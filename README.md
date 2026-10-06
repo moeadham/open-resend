@@ -36,16 +36,37 @@ Terraform owns only the Zero Trust Access application and policy. Wrangler owns 
 
 Before the first deployment, activate a Zero Trust plan for the Cloudflare account and configure Cloudflare as its account-member identity provider. New Zero Trust organizations include this identity provider by default. Terraform requires exactly one Cloudflare identity provider, restricts the application to it, and redirects authentication directly to it. The default policy admits members of the deploying Cloudflare account; set `allowed_account_id` to authorize members of a different account.
 
-1. Create a scoped Cloudflare API token with these account permissions:
+### Create the Terraform API token
 
-   - Access: Apps and Policies Read and Write
+In **Cloudflare Dashboard → My Profile → API Tokens**, select **Create Token**, then **Create Custom Token**.
+
+![Cloudflare custom API token form](docs/images/cloudflare-token/01-custom-token-form.jpg)
+
+Name the token `cloudflare-resend-terraform` and add these account permissions:
+
+- **Access: Apps and Policies → Edit**
+- **Access: Organizations, Identity Providers, and Groups → Read**
+
+Under **Account Resources**, choose **Include → Specific account** and select only the account where this application will be deployed. An IP restriction or short TTL is optional, but a short TTL is sensible for a one-off manual deployment.
+
+![Scoped Access permissions and account resource](docs/images/cloudflare-token/02-scoped-permissions.jpg)
+
+Select **Continue to summary** and verify that the summary contains only the two permissions and the intended account.
+
+![Cloudflare API token summary](docs/images/cloudflare-token/03-token-summary.jpg)
+
+Select **Create Token**, copy the token from the one-time display, and export it for Terraform. The screenshots intentionally stop before the secret is shown. Never commit the token, paste it into an issue, or include it in a screenshot.
+
+```bash
+export CLOUDFLARE_API_TOKEN="paste-token-here"
+```
+
+### Provision and deploy
+
+1. Confirm that the API token has these account permissions:
+
+   - Access: Apps and Policies Edit
    - Access: Organizations, Identity Providers, and Groups Read
-
-   Export it for Terraform without placing it in a checked-in file:
-
-   ```bash
-   export CLOUDFLARE_API_TOKEN="..."
-   ```
 
 2. Configure and apply the Access infrastructure:
 
