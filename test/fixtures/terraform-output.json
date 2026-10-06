@@ -1,0 +1,27 @@
+{
+  "access_application_id": {
+    "sensitive": false,
+    "type": "string",
+    "value": "00000000-0000-4000-8000-000000000001"
+  },
+  "access_policy_id": {
+    "sensitive": false,
+    "type": "string",
+    "value": "00000000-0000-4000-8000-000000000002"
+  },
+  "access_aud": {
+    "sensitive": false,
+    "type": "string",
+    "value": "example-access-audience"
+  },
+  "access_team_domain": {
+    "sensitive": false,
+    "type": "string",
+    "value": "example.cloudflareaccess.com"
+  },
+  "admin_hostname": {
+    "sensitive": false,
+    "type": "string",
+    "value": "mail-admin.example.com"
+  }
+}

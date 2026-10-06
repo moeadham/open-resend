@@ -5,15 +5,17 @@
   "type": "module",
   "scripts": {
     "build:assets": "esbuild assets/admin.ts assets/admin.css --bundle --minify --outdir=dist-assets/assets",
-    "check": "npm run build:assets && npm run types && tsc --noEmit",
+    "check": "npm run build:assets && npm run types && tsc --noEmit && npm run check:deployment",
     "types": "wrangler types",
+    "config:deploy": "node scripts/render-wrangler.mjs",
+    "check:deployment": "node scripts/verify-deployment-config.mjs",
     "test": "vitest run",
     "predev": "npm run build:assets",
     "dev": "wrangler dev",
     "predeploy:dry": "npm run check",
-    "deploy:dry": "wrangler deploy --dry-run",
+    "deploy:dry": "npm run config:deploy && wrangler deploy --config wrangler.deploy.jsonc --dry-run",
     "predeploy": "npm run check",
-    "deploy": "wrangler deploy"
+    "deploy": "npm run config:deploy && wrangler deploy --config wrangler.deploy.jsonc"
   },
   "dependencies": {
     "hono": "^4.13.13",

@@ -7,3 +7,9 @@ dist-assets/
 coverage/
 *.log
 *.cpuprofile
+wrangler.deploy.jsonc
+.deployment.json
+infra/access/.terraform/
+infra/access/*.tfstate
+infra/access/*.tfstate.*
+infra/access/terraform.tfvars

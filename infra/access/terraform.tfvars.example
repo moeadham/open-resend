@@ -1,0 +1,7 @@
+account_id         = "replace-with-cloudflare-account-id"
+admin_hostname     = "mail-admin.example.com"
+allowed_account_id = null
+
+# Optional:
+# application_name = "Cloudflare Mail Admin"
+# session_duration = "24h"

@@ -32,14 +32,39 @@ The bypass cannot authenticate a non-local hostname or a production environment.
 
 ## Cloudflare provisioning
 
-1. Create D1 and replace the zero UUID in `wrangler.jsonc` with the returned database ID:
+Terraform owns only the Zero Trust Access application and policy. Wrangler owns the Worker, custom domains, and bindings. This separation prevents the two tools from changing the same Cloudflare resources.
+
+Before the first deployment, activate a Zero Trust plan for the Cloudflare account and configure Cloudflare as its account-member identity provider. New Zero Trust organizations include this identity provider by default. Terraform requires exactly one Cloudflare identity provider, restricts the application to it, and redirects authentication directly to it. The default policy admits members of the deploying Cloudflare account; set `allowed_account_id` to authorize members of a different account.
+
+1. Create a scoped Cloudflare API token with these account permissions:
+
+   - Access: Apps and Policies Read and Write
+   - Access: Organizations, Identity Providers, and Groups Read
+
+   Export it for Terraform without placing it in a checked-in file:
+
+   ```bash
+   export CLOUDFLARE_API_TOKEN="..."
+   ```
+
+2. Configure and apply the Access infrastructure:
+
+   ```bash
+   cp infra/access/terraform.tfvars.example infra/access/terraform.tfvars
+   # Fill in account_id and admin_hostname.
+   terraform -chdir=infra/access init
+   terraform -chdir=infra/access apply
+   ```
+
+   Terraform protects the complete admin hostname, attaches one Allow policy for Cloudflare account members, and outputs the application audience and Zero Trust team domain consumed by the Worker. Access denies identities that do not match an Allow policy by default.
+
+3. Create D1 and retain the returned database ID:
 
    ```bash
    npx wrangler d1 create cloudflare-resend
-   npx wrangler d1 migrations apply cloudflare-resend --remote
    ```
 
-2. Create the delivery, dead-letter, and Email Service event queues:
+4. Create the delivery, dead-letter, and Email Service event queues:
 
    ```bash
    npx wrangler queues create cloudflare-resend-deliveries
@@ -47,17 +72,21 @@ The bypass cannot authenticate a non-local hostname or a production environment.
    npx wrangler queues create cloudflare-resend-email-events
    ```
 
-3. Onboard every sending domain in **Cloudflare Dashboard → Compute & AI → Email Service → Email Sending**. Domain onboarding remains deliberately outside this application.
+5. Copy `.deployment.example.json` to `.deployment.json`, enter the API hostname and D1 database ID, then render the deploy-only Wrangler configuration:
 
-4. For every sending domain, create an Email Sending event subscription targeting `cloudflare-resend-email-events`. Subscribe to delivered, deferred, bounced, failed, rejected, and complained events.
+   ```bash
+   cp .deployment.example.json .deployment.json
+   npm run config:deploy
+   npx wrangler d1 migrations apply cloudflare-resend --remote --config wrangler.deploy.jsonc
+   ```
 
-5. Add both custom hostnames to the Worker. Set the variables in `wrangler.jsonc` to the real hostnames and set `PUBLIC_BASE_URL` to the HTTPS API hostname.
+   `.deployment.json`, Terraform state, `terraform.tfvars`, and `wrangler.deploy.jsonc` are ignored by Git. The checked-in `wrangler.jsonc` contains only local-development defaults.
 
-6. In **Zero Trust → Access controls → Applications**, create a self-hosted application covering the entire admin hostname, for example `mail-admin.example.com/*`. Add an explicit Allow policy for the intended administrators and leave all other identities denied.
+6. Onboard every sending domain in **Cloudflare Dashboard → Compute & AI → Email Service → Email Sending**. Domain onboarding remains deliberately outside this application.
 
-7. Copy the Access Application Audience tag to `ACCESS_AUD`. Set `ACCESS_TEAM_DOMAIN` to the team hostname, such as `company.cloudflareaccess.com` or `https://company.cloudflareaccess.com`.
+7. For every sending domain, create an Email Sending event subscription targeting `cloudflare-resend-email-events`. Subscribe to delivered, deferred, bounced, failed, rejected, and complained events.
 
-8. Build and deploy:
+8. Build and deploy. The deploy command regenerates `wrangler.deploy.jsonc` from Terraform outputs before invoking Wrangler:
 
    ```bash
    npm run check
@@ -67,6 +96,8 @@ The bypass cannot authenticate a non-local hostname or a production environment.
    ```
 
 After signing into the admin hostname through Access, register the already-onboarded domains and sender addresses, then create the first API key from the **API keys** page.
+
+For shared or automated deployments, store Terraform state in a remote backend with locking rather than committing local state. A manually created Access application for the same hostname must be removed before applying this configuration; the project intentionally supports one Terraform-owned installation path rather than migration of dashboard-managed resources.
 
 ## Resend SDK
 

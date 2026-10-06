@@ -1,0 +1,10 @@
+{
+  "workerName": "cloudflare-resend-test",
+  "apiHostname": "mail-api.example.com",
+  "d1DatabaseId": "00000000-0000-4000-8000-000000000003",
+  "d1DatabaseName": "cloudflare-resend-test",
+  "environment": "production",
+  "deliveryQueue": "cloudflare-resend-test-deliveries",
+  "deadLetterQueue": "cloudflare-resend-test-deliveries-dlq",
+  "emailEventsQueue": "cloudflare-resend-test-email-events"
+}
