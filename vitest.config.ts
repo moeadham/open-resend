@@ -7,7 +7,7 @@ export default defineWorkersConfig({
     include: ["test/**/*.test.ts"],
     poolOptions: {
       workers: {
-        wrangler: { configPath: "./wrangler.jsonc" },
+        wrangler: { configPath: "./wrangler.test.jsonc" },
         miniflare: {
           compatibilityDate: "2025-05-08",
           bindings: { TEST_MIGRATIONS: migrations },

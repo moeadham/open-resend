@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "cloudflare-resend",
+  "name": "cloudflare-resend-test",
   "main": "src/index.tsx",
   "compatibility_date": "2026-10-06",
   "compatibility_flags": ["nodejs_compat"],
@@ -12,7 +12,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "cloudflare-resend",
+      "database_name": "cloudflare-resend-test",
+      "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "./migrations"
     }
   ],
@@ -26,24 +27,24 @@
   ],
   "queues": {
     "producers": [
-      { "binding": "DELIVERY_QUEUE", "queue": "cloudflare-resend-deliveries" }
+      { "binding": "DELIVERY_QUEUE", "queue": "cloudflare-resend-test-deliveries" }
     ],
     "consumers": [
       {
-        "queue": "cloudflare-resend-deliveries",
+        "queue": "cloudflare-resend-test-deliveries",
         "max_batch_size": 10,
         "max_batch_timeout": 5,
         "max_retries": 5,
-        "dead_letter_queue": "cloudflare-resend-deliveries-dlq"
+        "dead_letter_queue": "cloudflare-resend-test-deliveries-dlq"
       },
       {
-        "queue": "cloudflare-resend-email-events",
+        "queue": "cloudflare-resend-test-email-events",
         "max_batch_size": 10,
         "max_batch_timeout": 5,
         "max_retries": 3
       },
       {
-        "queue": "cloudflare-resend-deliveries-dlq",
+        "queue": "cloudflare-resend-test-deliveries-dlq",
         "max_batch_size": 10,
         "max_batch_timeout": 5,
         "max_retries": 3
@@ -61,10 +62,5 @@
     "ACCESS_AUD": "local-development-audience",
     "ENVIRONMENT": "development",
     "ALLOW_LOCAL_ADMIN": "true"
-  },
-  "observability": {
-    "enabled": true,
-    "logs": { "enabled": true, "head_sampling_rate": 1 },
-    "traces": { "enabled": true, "head_sampling_rate": 0.1 }
   }
 }

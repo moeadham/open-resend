@@ -2,7 +2,23 @@
 
 > **Beta:** This project is under active development. We are looking for contributors to help make it feature-compatible with the official Resend client.
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/moeadham/open-resend)
+
 A lightweight, self-hosted mailing-list and campaign service built entirely on Cloudflare. Open Re-send provides a familiar browser interface for managing audiences and broadcasts, plus a focused Resend-compatible API for applications that already use the official Resend SDK.
+
+## Deploy to Cloudflare
+
+The button above clones this public repository into your Cloudflare account, creates the Worker, D1 database, Queues, and Durable Object, applies the D1 migrations, and configures Workers Builds.
+
+Account-specific security and email configuration still needs to be completed after the first deploy:
+
+1. Enable each sending domain in Cloudflare Email Sending.
+2. Create the admin and API custom hostnames plus the unsubscribe hostname for each sending domain.
+3. Create a Cloudflare Access self-hosted application for the complete admin hostname.
+4. Replace the example Worker variables with the real hostnames, Access team domain, Access audience, and unsubscribe-hostname map; set `ENVIRONMENT=production` and `ALLOW_LOCAL_ADMIN=false`.
+5. Create an Email Sending event subscription targeting the provisioned `cloudflare-resend-email-events` queue.
+
+The one-click flow deliberately does not request a broad account API token and cannot infer your domains, Zero Trust policy, or sender identities. Follow [Cloudflare provisioning](#cloudflare-provisioning) for the complete configuration, including the Terraform option for Access.
 
 ## What it includes
 
@@ -155,14 +171,16 @@ export CLOUDFLARE_API_TOKEN="paste-token-here"
 
 7. For every sending domain, create an Email Sending event subscription targeting `cloudflare-resend-email-events`. Subscribe to delivered, deferred, bounced, failed, rejected, and complained events.
 
-8. Build and deploy. The deploy command regenerates `wrangler.deploy.jsonc` from Terraform outputs before invoking Wrangler:
+8. Build and deploy. The configured deploy command regenerates `wrangler.deploy.jsonc` from Terraform outputs before invoking Wrangler:
 
    ```bash
    npm run check
    npm test
    npm run deploy:dry
-   npm run deploy
+   npm run deploy:configured
    ```
+
+`npm run deploy` is the portable path used by the Deploy to Cloudflare button. It auto-provisions resources from the checked-in `wrangler.jsonc`; use `npm run deploy:configured` when deploying with `.deployment.json` and Terraform outputs.
 
 After signing into the admin hostname through Access, register each already-onboarded sending domain, add its sender identities, then create the first API key from the **API keys** page.
 

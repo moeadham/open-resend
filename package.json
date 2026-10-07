@@ -15,7 +15,34 @@
     "predeploy:dry": "npm run check",
     "deploy:dry": "npm run config:deploy && wrangler deploy --config wrangler.deploy.jsonc --dry-run",
     "predeploy": "npm run check",
-    "deploy": "npm run config:deploy && wrangler deploy --config wrangler.deploy.jsonc"
+    "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "predeploy:configured": "npm run check",
+    "deploy:configured": "npm run config:deploy && wrangler d1 migrations apply DB --remote --config wrangler.deploy.jsonc && wrangler deploy --config wrangler.deploy.jsonc"
+  },
+  "cloudflare": {
+    "bindings": {
+      "ADMIN_HOSTNAME": {
+        "description": "Hostname for the Access-protected admin site, for example mail.example.com"
+      },
+      "API_HOSTNAME": {
+        "description": "Public hostname for the Resend-compatible API, for example mail-api.example.com"
+      },
+      "UNSUBSCRIBE_HOSTNAMES": {
+        "description": "JSON map of sending domains to public unsubscribe hostnames"
+      },
+      "ACCESS_TEAM_DOMAIN": {
+        "description": "Cloudflare Zero Trust team domain used to validate Access JWTs"
+      },
+      "ACCESS_AUD": {
+        "description": "Audience tag of the Cloudflare Access application protecting the admin hostname"
+      },
+      "ENVIRONMENT": {
+        "description": "Set to production for any public deployment"
+      },
+      "ALLOW_LOCAL_ADMIN": {
+        "description": "Localhost-only development bypass; set to false for public deployments"
+      }
+    }
   },
   "dependencies": {
     "@kiwa-ui/enhance": "^2.1.0",
