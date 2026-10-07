@@ -39,6 +39,7 @@ describe("mail helpers", () => {
       sender_reply_to: "replies@example.com",
       sender_domain: "example.com",
       postal_address: "1 Main Street\r\nTokyo",
+      sender_domain_enabled: 1,
       sender_active: 1,
     };
     const url = "https://api.example.com/unsubscribe/token";

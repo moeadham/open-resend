@@ -86,6 +86,11 @@ export async function processDeliveryMessage(message: Message<DeliveryQueueMessa
     message.ack();
     return;
   }
+  if (!detail.sender_domain_enabled) {
+    await setDeliveryStatus(env.DB, deliveryId, "failed", "Sender domain is not enabled in Cloudflare Email Sending.");
+    message.ack();
+    return;
+  }
 
   if (!detail.contact_id) {
     await setDeliveryStatus(env.DB, deliveryId, "suppressed", "Contact was deleted.");
@@ -204,11 +209,12 @@ function broadcastReplyTo(value: string | null): string | null {
 
 export async function validateBroadcastReady(env: Env, broadcastId: string): Promise<void> {
   const row = await env.DB.prepare(
-    `SELECT b.id, b.subject, b.html, b.text, s.active, s.postal_address, d.name AS sender_domain
+    `SELECT b.id, b.subject, b.html, b.text, s.active, s.postal_address, d.name AS sender_domain, d.cloudflare_enabled
      FROM broadcasts b JOIN senders s ON s.id = b.sender_id JOIN domains d ON d.id = s.domain_id WHERE b.id = ?`,
-  ).bind(broadcastId).first<{ id: string; subject: string; html: string | null; text: string | null; active: number; postal_address: string; sender_domain: string }>();
+  ).bind(broadcastId).first<{ id: string; subject: string; html: string | null; text: string | null; active: number; postal_address: string; sender_domain: string; cloudflare_enabled: number }>();
   if (!row) throw new AppError(404, "not_found", "Broadcast not found.");
   if (!row.active) throw new AppError(422, "validation_error", "The selected sender is inactive.");
+  if (!row.cloudflare_enabled) throw new AppError(422, "validation_error", "The selected sender domain is no longer enabled in Cloudflare Email Sending.");
   if (!row.postal_address.trim()) throw new AppError(422, "validation_error", "The selected sender requires a postal address.");
   if (!row.subject.trim() || (!row.html && !row.text)) throw new AppError(422, "validation_error", "The broadcast is incomplete.");
   unsubscribeBaseUrl(env.UNSUBSCRIBE_HOSTNAMES, row.sender_domain);
@@ -228,7 +234,7 @@ async function loadDelivery(db: D1Database, id: string): Promise<DeliveryDetail 
     `SELECT d.*, b.subject, b.html, b.text, b.preview_text, b.reply_to_json,
             b.status AS broadcast_status, b.segment_id, b.topic_id,
             s.email AS sender_email, s.name AS sender_name, COALESCE(s.company_name, s.name) AS sender_company_name, s.reply_to AS sender_reply_to,
-            dom.name AS sender_domain, s.postal_address, s.active AS sender_active
+            dom.name AS sender_domain, dom.cloudflare_enabled AS sender_domain_enabled, s.postal_address, s.active AS sender_active
      FROM deliveries d
      JOIN broadcasts b ON b.id = d.broadcast_id
      JOIN senders s ON s.id = b.sender_id

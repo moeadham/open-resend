@@ -19,7 +19,7 @@ A lightweight, self-hosted mailing-list and campaign service built entirely on C
 
 ## Typical workflow
 
-1. Enable a domain in Cloudflare Email Sending, then register it in **Domains**.
+1. Enable a domain in Cloudflare Email Sending, then select **Sync sending domains** in **Domains**.
 2. Add one or more sender identities. Every sender requires a physical postal address and can include a company name for the compliance footer; when omitted, the sender name is used.
 3. Create a segment and add contacts to it. A contact must be an active member of the selected segment to receive a broadcast.
 4. Optionally create a Topic when recipients should be able to unsubscribe from one category without leaving every mailing.
@@ -64,6 +64,8 @@ The local admin bypass works only when all three conditions hold:
 
 The bypass cannot authenticate a non-local hostname or a production environment.
 
+The rest of the admin works without Cloudflare credentials in local development. To exercise **Sync sending domains** locally, set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_EMAIL_DISCOVERY_TOKEN` in `.dev.vars`; use the same Email Sending Read scope described by the guided deployment.
+
 ## Cloudflare provisioning
 
 Terraform owns only the Zero Trust Access application and policy. Wrangler owns the Worker, custom domains, and bindings. This separation prevents the two tools from changing the same Cloudflare resources.
@@ -88,15 +90,16 @@ npm run deploy -- --yes
 The deploy performs a complete preflight before it changes Cloudflare resources. It:
 
 - verifies the active Wrangler account against the account ID saved in `.deployment.json`;
-- asks for the admin, API, sending-domain, and per-domain unsubscribe hostnames only during first-time setup or with `--configure`;
-- checks that every sending domain is already enabled in Cloudflare Email Sending without modifying domain onboarding;
+- asks for the admin, API, and per-domain unsubscribe hostnames only during first-time setup or with `--configure`;
+- discovers the account's enabled Email Sending domains without modifying domain onboarding;
 - loads the Terraform API token from `CLOUDFLARE_API_TOKEN` or the local `.open-resend.secrets.json`, opening Cloudflare's official prefilled token template only when neither contains a token for the selected account;
+- loads a separate Email Sending read token from `CLOUDFLARE_EMAIL_DISCOVERY_TOKEN` or the same local secrets file, then installs it as an encrypted Worker secret;
 - validates the token, Zero Trust organization, identity provider, application tests, and Terraform plan;
 - inventories D1 and Queues and displays the exact create/reuse plan;
 - requires one final confirmation before making Cloudflare changes (`DEPLOY` during setup, `y/N` for updates), unless `--yes` is supplied;
 - creates missing D1 and Queue resources, applies Access, migrates D1, deploys the Worker and custom domains, creates missing Email Sending event subscriptions, and verifies the public endpoints with retries for DNS and TLS propagation. If verification is still pending, the script reports a non-fatal warning because the Cloudflare deployment itself is already complete.
 
-The template supplies the exact Access permissions and account restriction, so the deployer only reviews it, creates the token, and pastes the one-time value. After validation, the script stores prompted tokens by account ID in the git-ignored `.open-resend.secrets.json` with owner-only permissions (`0600`) and reuses them for later deploy and teardown runs. `CLOUDFLARE_API_TOKEN` takes precedence and is not persisted. The token is never printed. Delete `.open-resend.secrets.json` to forget all saved tokens, or revoke a token in Cloudflare. On macOS, install the supported Terraform-compatible runner once with `brew install opentofu`. On other platforms, install OpenTofu or Terraform and ensure `tofu` or `terraform` is on `PATH`.
+The script opens two prefilled token templates: a deployment token for Access and a separate read-only Email Sending token for runtime domain sync. After validation, it stores prompted tokens by account ID in the git-ignored `.open-resend.secrets.json` with owner-only permissions (`0600`) and reuses them for later deploys. `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_EMAIL_DISCOVERY_TOKEN` take precedence and are not persisted. Tokens are never printed. Delete `.open-resend.secrets.json` to forget all saved tokens, or revoke either token in Cloudflare. On macOS, install the supported Terraform-compatible runner once with `brew install opentofu`. On other platforms, install OpenTofu or Terraform and ensure `tofu` or `terraform` is on `PATH`.
 
 The manual procedure below remains available for debugging and infrastructure review.
 
@@ -193,7 +196,7 @@ export CLOUDFLARE_API_TOKEN="paste-token-here"
    }
    ```
 
-   The keys must match the sending domains registered in the admin. Every value becomes a Wrangler-managed Worker Custom Domain, and campaigns select the hostname associated with their sender domain. Cloudflare creates the DNS records directly; do not create conflicting CNAME records manually.
+   The keys must match the sending domains that will be synchronized into the admin. Every value becomes a Wrangler-managed Worker Custom Domain, and campaigns select the hostname associated with their sender domain. Cloudflare creates the DNS records directly; do not create conflicting CNAME records manually.
 
    Render the deploy-only Wrangler configuration and apply D1 migrations:
 
@@ -216,9 +219,10 @@ export CLOUDFLARE_API_TOKEN="paste-token-here"
    npm test
    npm run deploy:dry
    npm run deploy:worker
+   npx wrangler secret put CLOUDFLARE_EMAIL_DISCOVERY_TOKEN --config wrangler.deploy.jsonc
    ```
 
-After signing into the admin hostname through Access, register each already-onboarded sending domain, add its sender identities, then create the first API key from the **API keys** page.
+After signing into the admin hostname through Access, select **Sync sending domains**, add sender identities, then create the first API key from the **API keys** page. Sync reads Cloudflare's current Email Sending configuration; it never enables or disables domains. A domain also needs an unsubscribe hostname in `.deployment.json` before it can be selected for a sender.
 
 For shared or automated deployments, store Terraform state in a remote backend with locking rather than committing local state. A manually created Access application for the same hostname must be removed before applying this configuration; the project intentionally supports one Terraform-owned installation path rather than migration of dashboard-managed resources.
 
@@ -291,7 +295,7 @@ The following Resend client namespaces are not implemented and remain outside th
 - `resend.automations` and automation runs.
 - `resend.batch` and transactional `resend.emails`, including attachments and inbound/receiving email operations.
 - `resend.contactProperties` schema management and `resend.contacts.imports`. Arbitrary contact property values are stored, but property definitions and bulk CSV imports are absent.
-- `resend.domains` and domain claims. Domains are onboarded in Cloudflare Email Sending and then registered manually in the admin.
+- `resend.domains` and domain claims. Domains are onboarded in Cloudflare Email Sending and synchronized into the admin.
 - `resend.events`, `resend.logs`, and `resend.usage`.
 - `resend.oauthGrants`.
 - `resend.suppressions`, including batch suppression management. Open Re-send creates suppressions from hard bounces and complaints but does not expose the matching SDK routes.

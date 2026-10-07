@@ -510,7 +510,7 @@ async function prepareBroadcast(db: D1Database, body: JsonObject): Promise<{
   const fromValue = requiredString(body.from, "from", 500);
   const from = parseFrom(fromValue);
   if (!isEmail(from.email)) throw new AppError(422, "validation_error", "from is invalid.");
-  const sender = await db.prepare("SELECT * FROM senders WHERE email = ? COLLATE NOCASE AND active = 1")
+  const sender = await db.prepare("SELECT s.* FROM senders s JOIN domains d ON d.id=s.domain_id WHERE s.email = ? COLLATE NOCASE AND s.active = 1 AND d.cloudflare_enabled = 1")
     .bind(from.email).first<SenderRow>();
   if (!sender) throw new AppError(422, "validation_error", "from must match an active registered sender.");
   const html = optionalString(body.html, "html", 1_000_000);

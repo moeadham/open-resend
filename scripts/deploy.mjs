@@ -13,6 +13,9 @@ const tokenPermissions = [
   { key: "access", type: "edit" },
   { key: "access_acct", type: "read" },
 ];
+const emailDiscoveryPermissions = [
+  { key: "email_sending", type: "read" },
+];
 const emailEvents = [
   "message.delivered",
   "message.deferred",
@@ -252,6 +255,14 @@ async function main() {
   console.log(`Cloudflare user: ${identity.email}`);
   console.log(`Cloudflare account: ${account.name} (${account.id})\n`);
 
+  section("Checking Email Sending domains");
+  const emailOutput = command("npx", ["--no-install", "wrangler", "email", "sending", "list"], { env: accountEnv(account.id) });
+  const enabledDomains = parseEmailSendingDomains(emailOutput);
+  const accountSendingDomains = [...enabledDomains.entries()].filter(([, details]) => details.enabled).map(([domain]) => domain).sort();
+  if (!accountSendingDomains.length) {
+    fail("No enabled Cloudflare Email Sending domains were found. Enable one at https://dash.cloudflare.com/?to=/:account/email-service/sending");
+  }
+
   let workerName;
   let adminHostname;
   let apiHostname;
@@ -262,8 +273,8 @@ async function main() {
     workerName = await ask("Worker name", existingDeployment?.workerName ?? "open-resend");
     adminHostname = normalizeHostname(await ask("Access-protected admin hostname", existingDeployment?.adminHostname ?? existingTerraformVars.admin_hostname ?? "resend.example.com"));
     apiHostname = normalizeHostname(await ask("Public API hostname", existingDeployment?.apiHostname ?? "mail-api.example.com"));
-    const existingDomains = Object.keys(existingDeployment?.unsubscribeHostnames ?? {});
-    sendingDomains = parseDomains(await ask("Enabled Email Sending domains (comma-separated)", existingDomains.join(", ") || "example.com"));
+    sendingDomains = accountSendingDomains;
+    console.log(`Using enabled Email Sending domains: ${sendingDomains.join(", ")}`);
     unsubscribeHostnames = {};
     for (const domain of sendingDomains) {
       const current = existingDeployment?.unsubscribeHostnames?.[domain] ?? `mail.${domain}`;
@@ -281,9 +292,6 @@ async function main() {
 
   validateHostnames({ adminHostname, apiHostname, sendingDomains, unsubscribeHostnames });
 
-  section("Checking Email Sending domains");
-  const emailOutput = command("npx", ["--no-install", "wrangler", "email", "sending", "list"], { env: accountEnv(account.id) });
-  const enabledDomains = parseEmailSendingDomains(emailOutput);
   const missingDomains = sendingDomains.filter((domain) => enabledDomains.get(domain)?.enabled !== true);
   if (missingDomains.length) {
     fail(`These domains are not enabled for Cloudflare Email Sending: ${missingDomains.join(", ")}. Enable them first at https://dash.cloudflare.com/?to=/:account/email-service/sending`);
@@ -325,7 +333,10 @@ async function main() {
   console.log("✓ Application checks and tests passed");
 
   const token = await getTerraformToken(account);
-  console.log("✓ Cloudflare API token is active");
+  console.log("✓ Cloudflare deployment token is active");
+  const emailDiscoveryToken = await getEmailDiscoveryToken(account);
+  const discoveredDomains = await verifyEmailDiscoveryToken(emailDiscoveryToken, account.id);
+  console.log(`✓ Cloudflare Email Sending token can read ${discoveredDomains.length} enabled domain${discoveredDomains.length === 1 ? "" : "s"}`);
 
   writeTerraformVars({ accountId: account.id, adminHostname });
 
@@ -346,6 +357,7 @@ async function main() {
   console.log(`D1:                   ${existingDatabase ? "reuse" : "create"} ${databaseName}`);
   for (const name of Object.values(queueNames)) console.log(`Queue:                ${existingQueues.has(name) ? "reuse" : "create"} ${name}`);
   console.log("Access:               apply the validated Terraform plan");
+  console.log("Worker secret:        install scoped Email Sending read token");
   console.log("Database:             apply all pending migrations");
   console.log("Email events:         create missing per-domain subscriptions");
 
@@ -399,6 +411,9 @@ async function main() {
   command("npm", ["run", "build:assets"]);
   command("npx", ["--no-install", "wrangler", "deploy", "--config", "wrangler.deploy.jsonc"], { env: accountEnv(account.id) });
 
+  section("Installing Worker discovery secret");
+  commandWithInput("npx", ["--no-install", "wrangler", "secret", "put", "CLOUDFLARE_EMAIL_DISCOVERY_TOKEN", "--config", "wrangler.deploy.jsonc"], `${emailDiscoveryToken}\n`, { env: accountEnv(account.id) });
+
   section("Configuring Email Sending events");
   await ensureEmailEventSubscriptions({ accountId: account.id, domains: sendingDomains, enabledDomains, queue: queueNames.emailEvents });
 
@@ -413,7 +428,7 @@ async function main() {
     for (const warning of verificationWarnings) console.log(`- ${warning}`);
     console.log("This is commonly caused by DNS or TLS propagation immediately after creating custom domains. The deployment does not need to be repeated; check these URLs again in a few minutes.");
   }
-  console.log("Next: sign into the admin site, register the enabled sending domains, add sender identities, and create an API key.");
+  console.log("Next: sign into the admin site, sync sending domains, add sender identities, and create an API key.");
 }
 
 function findTerraform() {
@@ -443,6 +458,21 @@ function command(program, args, options = {}) {
   if (result.error) fail(`${program} could not start: ${result.error.message}`);
   if (result.status !== 0) fail(`${program} ${args.join(" ")} exited with status ${result.status}.`);
   return stripAnsi(stdout);
+}
+
+function commandWithInput(program, args, input, options = {}) {
+  const result = spawnSync(program, args, {
+    cwd: root,
+    env: options.env ?? process.env,
+    input,
+    encoding: "utf8",
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.error) fail(`${program} could not start: ${result.error.message}`);
+  if (result.status !== 0) fail(`${program} ${args.join(" ")} exited with status ${result.status}.`);
+  return stripAnsi(result.stdout ?? "");
 }
 
 function jsonCommand(program, args, options = {}) {
@@ -496,13 +526,23 @@ function retain(retained, label, reason) {
 }
 
 async function requestTerraformToken(account) {
-  const tokenUrl = apiTokenTemplateUrl(account.id);
+  const tokenUrl = apiTokenTemplateUrl(account.id, tokenPermissions, "Open Resend deployment");
   console.log("\nA scoped Cloudflare API token is required only for the Zero Trust Access application.");
   console.log(`Opening a prefilled token for ${account.name}.`);
   console.log("Review the two permissions, continue to the summary, create the token, and copy its one-time value.");
   console.log(`If the browser does not open, use:\n${tokenUrl}\n`);
   openUrl(tokenUrl);
   return secretQuestion("Paste the token (input is hidden): ");
+}
+
+async function requestEmailDiscoveryToken(account) {
+  const tokenUrl = apiTokenTemplateUrl(account.id, emailDiscoveryPermissions, "Open Resend Email Sending discovery");
+  console.log("\nA second, read-only Cloudflare API token lets the deployed Worker sync enabled Email Sending domains.");
+  console.log(`Opening a prefilled token for ${account.name}.`);
+  console.log("Review the Email Sending Read permission and account restriction, create the token, and copy its one-time value.");
+  console.log(`If the browser does not open, use:\n${tokenUrl}\n`);
+  openUrl(tokenUrl);
+  return secretQuestion("Paste the Email Sending read token (input is hidden): ");
 }
 
 async function getTerraformToken(account) {
@@ -538,12 +578,44 @@ async function getTerraformToken(account) {
   return token;
 }
 
-function apiTokenTemplateUrl(accountId) {
+async function getEmailDiscoveryToken(account) {
+  const environmentToken = process.env.CLOUDFLARE_EMAIL_DISCOVERY_TOKEN;
+  if (environmentToken) {
+    await verifyEmailDiscoveryToken(environmentToken, account.id);
+    console.log("✓ Using Email Sending token from CLOUDFLARE_EMAIL_DISCOVERY_TOKEN");
+    return environmentToken;
+  }
+
+  const secrets = readJsonIfPresent(secretsPath) ?? {};
+  const savedToken = secrets.emailDiscoveryTokens?.[account.id];
+  if (typeof savedToken === "string" && savedToken) {
+    try {
+      await verifyEmailDiscoveryToken(savedToken, account.id);
+      console.log(`✓ Using saved Email Sending token from ${secretsPath}`);
+      return savedToken;
+    } catch (error) {
+      console.log(`The saved Email Sending token for ${account.name} cannot read this account: ${error.message}`);
+    }
+  }
+
+  const token = await requestEmailDiscoveryToken(account);
+  await verifyEmailDiscoveryToken(token, account.id);
+  const emailDiscoveryTokens = {
+    ...(secrets.emailDiscoveryTokens ?? {}),
+    [account.id]: token,
+  };
+  writeFileSync(secretsPath, `${JSON.stringify({ ...secrets, emailDiscoveryTokens }, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(secretsPath, 0o600);
+  console.log(`✓ Saved Email Sending token to ${secretsPath} (mode 0600)`);
+  return token;
+}
+
+function apiTokenTemplateUrl(accountId, permissions, name) {
   const url = new URL("https://dash.cloudflare.com/profile/api-tokens");
-  url.searchParams.set("permissionGroupKeys", JSON.stringify(tokenPermissions));
+  url.searchParams.set("permissionGroupKeys", JSON.stringify(permissions));
   url.searchParams.set("accountId", accountId);
   url.searchParams.set("zoneId", "all");
-  url.searchParams.set("name", "Open Resend deployment");
+  url.searchParams.set("name", name);
   return url.toString();
 }
 
@@ -588,6 +660,31 @@ async function verifyToken(token) {
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok || !body.success || body.result?.status !== "active") fail("The Cloudflare API token is invalid or inactive.");
+}
+
+async function verifyEmailDiscoveryToken(token, accountId) {
+  await verifyToken(token);
+  const zones = await cloudflarePages(`/accounts/${accountId}/email/sending/zones`, token);
+  const subdomains = (await Promise.all(zones.map((zone) => cloudflarePages(`/zones/${zone.id}/email/sending/subdomains`, token)))).flat();
+  return [...new Set(subdomains.filter((domain) => domain.enabled && !domain.name.startsWith("*.")).map((domain) => normalizeHostname(domain.name)))].sort();
+}
+
+async function cloudflarePages(path, token) {
+  const results = [];
+  for (let page = 1; page <= 50; page += 1) {
+    const url = new URL(`https://api.cloudflare.com/client/v4${path}`);
+    url.searchParams.set("page", String(page));
+    url.searchParams.set("per_page", "50");
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || !body.success || !Array.isArray(body.result)) {
+      const detail = body.errors?.map((error) => error.message).filter(Boolean).join("; ");
+      fail(`The Email Sending token could not read Cloudflare${detail ? `: ${detail}` : "."}`);
+    }
+    results.push(...body.result);
+    if (page >= Number(body.result_info?.total_pages ?? 1)) return results;
+  }
+  fail("Cloudflare returned too many pages while validating the Email Sending token.");
 }
 
 function openUrl(url) {
