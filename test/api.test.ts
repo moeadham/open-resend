@@ -139,7 +139,7 @@ describe("Resend-compatible API", () => {
     expect(await nextVisit.text()).not.toContain(raw);
   });
 
-  it("uses synced sending domains before creating senders", async () => {
+  it("supports sender CRUD with synced sending domains", async () => {
     const token = await accessToken(env.ACCESS_AUD, "5 minutes");
     const authHeaders = { "Cf-Access-Jwt-Assertion": token };
     const page = await SELF.fetch("https://admin.example.com/senders", { headers: authHeaders });
@@ -171,6 +171,32 @@ describe("Resend-compatible API", () => {
     expect(updatedPageHtml).toContain("Company name");
     expect(updatedPageHtml).toContain("URL ready");
     expect(updatedPageHtml).toContain("Enabled");
+    expect(updatedPageHtml).toContain(`href="/senders/${sender?.id}"`);
+    expect(updatedPageHtml).toContain("Edit sender");
+
+    const detail = await SELF.fetch(`https://admin.example.com/senders/${sender?.id}`, { headers: authHeaders });
+    expect(detail.status).toBe(200);
+    const detailHtml = await detail.text();
+    expect(detailHtml).toContain("Sender details");
+    expect(detailHtml).toContain("Save sender");
+    expect(detailHtml).toContain("Delete sender");
+    expect(detailHtml).toContain('value="news@example.com"');
+
+    const updated = await SELF.fetch(`https://admin.example.com/senders/${sender?.id}`, {
+      method: "POST", redirect: "manual", headers: { ...authHeaders, Origin: "https://admin.example.com" },
+      body: new URLSearchParams({ domain_id: domain?.id ?? "", email: "editor@example.com", name: "Editorial", company_name: "Example Co", reply_to: "replies@example.net", postal_address: "2 Main Street\r\nTokyo", active: "0" }),
+    });
+    expect(updated.status).toBe(303);
+    expect(updated.headers.get("location")).toBe(`/senders/${sender?.id}`);
+    const updatedSender = await env.DB.prepare("SELECT email,name,company_name,reply_to,postal_address,active FROM senders WHERE id=?").bind(sender?.id ?? "").first<{ email: string; name: string; company_name: string; reply_to: string; postal_address: string; active: number }>();
+    expect(updatedSender).toMatchObject({ email: "editor@example.com", name: "Editorial", company_name: "Example Co", reply_to: "replies@example.net", postal_address: "2 Main Street\nTokyo", active: 0 });
+
+    const invalidUpdate = await SELF.fetch(`https://admin.example.com/senders/${sender?.id}`, {
+      method: "POST", headers: { ...authHeaders, Origin: "https://admin.example.com" },
+      body: new URLSearchParams({ domain_id: domain?.id ?? "", email: "editor@elsewhere.example", name: "Editorial", company_name: "Example Co", reply_to: "", postal_address: "2 Main Street", active: "1" }),
+    });
+    expect(invalidUpdate.status).toBe(422);
+    expect((await env.DB.prepare("SELECT email FROM senders WHERE id=?").bind(sender?.id ?? "").first<{ email: string }>())?.email).toBe("editor@example.com");
 
     const invalid = await SELF.fetch("https://admin.example.com/senders", {
       method: "POST", headers: { ...authHeaders, Origin: "https://admin.example.com" },
@@ -184,6 +210,25 @@ describe("Resend-compatible API", () => {
     });
     expect(invalidControlCharacter.status).toBe(422);
     expect(await invalidControlCharacter.text()).toContain("Postal address contains invalid control characters.");
+
+    const now = nowIso();
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO segments (id,name,created_at,updated_at) VALUES ('sender-crud-segment','Sender CRUD',?,?)").bind(now, now),
+      env.DB.prepare("INSERT INTO broadcasts (id,name,segment_id,sender_id,from_value,subject,status,created_at,updated_at) VALUES ('sender-crud-broadcast','Sender CRUD','sender-crud-segment',?,'Editorial <editor@example.com>','Sender CRUD','draft',?,?)").bind(sender?.id ?? "", now, now),
+    ]);
+    const inUseDelete = await SELF.fetch(`https://admin.example.com/senders/${sender?.id}/delete`, {
+      method: "POST", headers: { ...authHeaders, Origin: "https://admin.example.com" },
+    });
+    expect(inUseDelete.status).toBe(409);
+    expect(await inUseDelete.text()).toContain("used by one or more broadcasts");
+    await env.DB.prepare("DELETE FROM broadcasts WHERE id='sender-crud-broadcast'").run();
+
+    const deleted = await SELF.fetch(`https://admin.example.com/senders/${sender?.id}/delete`, {
+      method: "POST", redirect: "manual", headers: { ...authHeaders, Origin: "https://admin.example.com" },
+    });
+    expect(deleted.status).toBe(303);
+    expect(deleted.headers.get("location")).toBe("/senders");
+    expect(await env.DB.prepare("SELECT id FROM senders WHERE id=?").bind(sender?.id ?? "").first()).toBeNull();
   });
 
   it("shows an explicit send action when reviewing a draft broadcast", async () => {
