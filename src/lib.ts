@@ -18,6 +18,10 @@ export function normalizeEmail(value: string): string {
   return value.trim().toLowerCase();
 }
 
+export function normalizeLineEndings(value: string): string {
+  return value.replace(/\r\n?|\n/g, "\n");
+}
+
 export function isEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) && value.length <= 320;
 }

@@ -161,16 +161,19 @@ describe("Resend-compatible API", () => {
 
     const created = await SELF.fetch("https://admin.example.com/senders", {
       method: "POST", redirect: "manual", headers: { ...authHeaders, Origin: "https://admin.example.com" },
-      body: new URLSearchParams({ domain_id: domain?.id ?? "", email: "news@example.com", name: "News", postal_address: "1 Main Street", return_to: "/senders" }),
+      body: new URLSearchParams({ domain_id: domain?.id ?? "", email: "news@example.com", name: "News", postal_address: "1 Main Street\r\nTokyo", return_to: "/senders" }),
     });
     expect(created.status).toBe(303);
-    const sender = await env.DB.prepare("SELECT s.id,d.name FROM senders s JOIN domains d ON d.id=s.domain_id WHERE s.email='news@example.com'").first<{ id: string; name: string }>();
+    const sender = await env.DB.prepare("SELECT s.id,d.name,s.company_name,s.postal_address FROM senders s JOIN domains d ON d.id=s.domain_id WHERE s.email='news@example.com'").first<{ id: string; name: string; company_name: string; postal_address: string }>();
     expect(sender).toMatchObject({ name: "example.com" });
+    expect(sender?.company_name).toBe("News");
+    expect(sender?.postal_address).toBe("1 Main Street\nTokyo");
     const updatedPageHtml = await (await SELF.fetch("https://admin.example.com/senders", { headers: authHeaders })).text();
     expect(updatedPageHtml).toContain(`data-copy-value="${domain?.id}"`);
     expect(updatedPageHtml).toContain(`data-copy-value="${sender?.id}"`);
     expect(updatedPageHtml).toContain("Unsubscribe URL ready");
     expect(updatedPageHtml).toContain("Remove this domain&#39;s senders first");
+    expect(updatedPageHtml).toContain("Company name");
 
     const usedDomainDelete = await SELF.fetch(`https://admin.example.com/senders/domains/${domain?.id}/delete`, {
       method: "POST", redirect: "manual", headers: { ...authHeaders, Origin: "https://admin.example.com" },
@@ -193,6 +196,13 @@ describe("Resend-compatible API", () => {
       body: new URLSearchParams({ domain_id: domain?.id ?? "", email: "news@elsewhere.example", name: "News", postal_address: "1 Main Street" }),
     });
     expect(invalid.status).toBe(422);
+
+    const invalidControlCharacter = await SELF.fetch("https://admin.example.com/senders", {
+      method: "POST", headers: { ...authHeaders, Origin: "https://admin.example.com" },
+      body: new URLSearchParams({ domain_id: domain?.id ?? "", email: "control@example.com", name: "Control", postal_address: "1 Main\u0000Street" }),
+    });
+    expect(invalidControlCharacter.status).toBe(422);
+    expect(await invalidControlCharacter.text()).toContain("Postal address contains invalid control characters.");
   });
 
   it("shows an explicit send action when reviewing a draft broadcast", async () => {

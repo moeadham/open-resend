@@ -51,6 +51,7 @@ export type SenderRow = {
   domain_id: string;
   email: string;
   name: string;
+  company_name: string | null;
   reply_to: string | null;
   postal_address: string;
   active: number;
@@ -95,6 +96,7 @@ export type DeliveryDetail = {
   topic_id: string | null;
   sender_email: string;
   sender_name: string;
+  sender_company_name: string;
   sender_reply_to: string | null;
   sender_domain: string;
   postal_address: string;
