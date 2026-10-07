@@ -3,5 +3,5 @@ admin_hostname     = "mail-admin.example.com"
 allowed_account_id = null
 
 # Optional:
-# application_name = "Cloudflare Mail Admin"
+# application_name = "Open re-send Admin"
 # session_duration = "24h"

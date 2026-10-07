@@ -33,7 +33,7 @@ variable "allowed_account_id" {
 variable "application_name" {
   description = "Name shown for the Access application."
   type        = string
-  default     = "Cloudflare Mail Admin"
+  default     = "Open re-send Admin"
 }
 
 variable "session_duration" {

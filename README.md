@@ -1,4 +1,4 @@
-# Cloudflare Mail
+# Open re-send
 
 A small, Cloudflare-native mailing-list and campaign service with a Resend-compatible API. It supports named segments, recipient-facing Topics, contacts, multiple sending domains and senders, draft/immediate/scheduled broadcasts, email preferences, delivery events, and a server-rendered administration site.
 
