@@ -324,3 +324,7 @@ npm audit --omit=dev
 ```
 
 The Worker-runtime suite applies the real D1 migration and exercises API authentication, the pinned official Resend SDK, idempotent Broadcast creation, Access JWT validation, scanner-safe unsubscribe behavior, and generated MIME headers/body ordering. Staging delivery and event-subscription checks still require provisioned Cloudflare domains and queues.
+
+## License
+
+Open Re-send is available under the [MIT License](LICENSE).

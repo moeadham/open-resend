@@ -2,6 +2,7 @@
   "name": "cloudflare-resend",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "build:assets": "esbuild assets/admin.ts --bundle --minify --outfile=dist-assets/assets/admin.js && tailwindcss -i assets/admin.css -o dist-assets/assets/admin.css --minify",
