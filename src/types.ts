@@ -59,6 +59,14 @@ export type SenderRow = {
   updated_at: string;
 };
 
+export type DomainRow = {
+  id: string;
+  name: string;
+  cloudflare_enabled: number;
+  last_synced_at: string | null;
+  created_at: string;
+};
+
 export type BroadcastRow = {
   id: string;
   name: string;
@@ -99,6 +107,7 @@ export type DeliveryDetail = {
   sender_company_name: string;
   sender_reply_to: string | null;
   sender_domain: string;
+  sender_domain_enabled: number;
   postal_address: string;
   sender_active: number;
 };
