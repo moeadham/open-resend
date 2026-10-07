@@ -163,6 +163,15 @@ describe("Resend-compatible API", () => {
     expect(failedHtml).toContain("responsive-table");
   });
 
+  it("uses an empty campaign body instead of saving editor placeholder text", async () => {
+    const token = await accessToken("replace-with-access-application-aud", "5 minutes");
+    const response = await SELF.fetch("https://admin.example.com/broadcasts/new", { headers: { "Cf-Access-Jwt-Assertion": token } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('id="html-input"');
+    expect(html).not.toContain("<p>Start writing your email…</p>");
+  });
+
   it("paginates broadcast administration at 40 rows", async () => {
     const now = nowIso();
     await env.DB.batch([

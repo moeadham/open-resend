@@ -3,9 +3,15 @@ import Quill from "quill";
 const editor = document.querySelector<HTMLElement>("[data-rich-editor]");
 const input = document.querySelector<HTMLTextAreaElement>("#html-input");
 if (editor && input) {
-  const quill = new Quill(editor, { theme: "snow", modules: { toolbar: [[{ header: [1, 2, 3, false] }], ["bold", "italic", "underline", "link"], [{ list: "ordered" }, { list: "bullet" }], ["blockquote", "code-block"], ["clean"]] } });
-  quill.clipboard.dangerouslyPasteHTML(input.value);
-  editor.closest("form")?.addEventListener("submit", () => {
+  const quill = new Quill(editor, { theme: "snow", placeholder: "Start writing your email…", modules: { toolbar: [[{ header: [1, 2, 3, false] }], ["bold", "italic", "underline", "link"], [{ list: "ordered" }, { list: "bullet" }], ["blockquote", "code-block"], ["clean"]] } });
+  if (input.value.trim()) quill.clipboard.dangerouslyPasteHTML(input.value);
+  editor.closest("form")?.addEventListener("submit", (event) => {
+    if (!quill.getText().trim()) {
+      event.preventDefault();
+      quill.focus();
+      window.alert("Write some email content before saving.");
+      return;
+    }
     input.value = quill.getSemanticHTML();
   });
 }
