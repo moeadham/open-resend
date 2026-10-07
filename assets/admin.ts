@@ -1,4 +1,5 @@
 import Quill from "quill";
+import flatpickr from "flatpickr";
 
 const editor = document.querySelector<HTMLElement>("[data-rich-editor]");
 const input = document.querySelector<HTMLTextAreaElement>("#html-input");
@@ -26,8 +27,16 @@ for (const form of document.querySelectorAll<HTMLFormElement>("form[data-schedul
   const local = form.querySelector<HTMLInputElement>("[data-schedule-local]");
   if (local) {
     const earliest = new Date(Date.now() + 5 * 60 * 1000);
-    const localOffset = earliest.getTimezoneOffset() * 60_000;
-    local.min = new Date(earliest.getTime() - localOffset).toISOString().slice(0, 16);
+    const uses24HourTime = Intl.DateTimeFormat(undefined, { hour: "numeric" }).resolvedOptions().hour12 === false;
+    flatpickr(local, {
+      altInput: true,
+      altFormat: uses24HourTime ? "F j, Y at H:i" : "F j, Y at h:i K",
+      dateFormat: "Y-m-d\\TH:i",
+      enableTime: true,
+      minDate: earliest,
+      minuteIncrement: 5,
+      time_24hr: uses24HourTime,
+    });
   }
   const timezoneLabel = form.querySelector<HTMLElement>("[data-timezone-label]");
   if (timezoneLabel) timezoneLabel.textContent = `Times shown in ${Intl.DateTimeFormat().resolvedOptions().timeZone}`;
