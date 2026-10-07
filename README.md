@@ -81,13 +81,13 @@ The guided deploy performs a complete preflight before it changes Cloudflare res
 - verifies the active Wrangler account;
 - asks for the admin, API, sending-domain, and per-domain unsubscribe hostnames;
 - checks that every sending domain is already enabled in Cloudflare Email Sending without modifying domain onboarding;
-- opens Cloudflare's API-token page and requests a hidden, in-memory Access token when one is not already in `CLOUDFLARE_API_TOKEN`;
+- opens Cloudflare's official prefilled API-token template for the selected account and requests its one-time value through hidden input when `CLOUDFLARE_API_TOKEN` is not already set;
 - validates the token, Zero Trust organization, identity provider, application tests, and Terraform plan;
 - inventories D1 and Queues and displays the exact create/reuse plan;
 - waits for the user to type `DEPLOY` before making any Cloudflare changes;
 - creates missing D1 and Queue resources, applies Access, migrates D1, deploys the Worker and custom domains, creates missing Email Sending event subscriptions, and verifies the public endpoints.
 
-The Access token is never written to disk or printed. On macOS, install the supported Terraform-compatible runner once with `brew install opentofu`. On other platforms, install OpenTofu or Terraform and ensure `tofu` or `terraform` is on `PATH`.
+The template supplies the exact Access permissions and account restriction, so the deployer only reviews it, creates the token, and pastes the one-time value. The token is never written to disk or printed. On macOS, install the supported Terraform-compatible runner once with `brew install opentofu`. On other platforms, install OpenTofu or Terraform and ensure `tofu` or `terraform` is on `PATH`.
 
 The manual procedure below remains available for debugging and infrastructure review.
 

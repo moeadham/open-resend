@@ -8,7 +8,10 @@ import { createInterface } from "node:readline/promises";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const deploymentPath = resolve(root, ".deployment.json");
 const terraformVarsPath = resolve(root, "infra/access/terraform.tfvars");
-const tokenUrl = "https://dash.cloudflare.com/profile/api-tokens";
+const tokenPermissions = [
+  { key: "access", type: "edit" },
+  { key: "access_acct", type: "read" },
+];
 const emailEvents = [
   "message.delivered",
   "message.deferred",
@@ -104,7 +107,7 @@ async function main() {
   command("npm", ["test"]);
   console.log("✓ Application checks and tests passed");
 
-  const token = process.env.CLOUDFLARE_API_TOKEN || await requestTerraformToken(account.name);
+  const token = process.env.CLOUDFLARE_API_TOKEN || await requestTerraformToken(account);
   await verifyToken(token);
   console.log("✓ Cloudflare API token is active");
 
@@ -239,15 +242,23 @@ async function ask(label, defaultValue) {
   return answer || defaultValue;
 }
 
-async function requestTerraformToken(accountName) {
+async function requestTerraformToken(account) {
+  const tokenUrl = apiTokenTemplateUrl(account.id);
   console.log("\nA scoped Cloudflare API token is required only for the Zero Trust Access application.");
-  console.log(`Create it for ${accountName} with:`);
-  console.log("  - Access: Apps and Policies — Edit");
-  console.log("  - Access: Organizations, Identity Providers, and Groups — Read");
-  console.log("  - Account Resources — Include this account only");
-  console.log(`\nOpening ${tokenUrl}`);
+  console.log(`Opening a prefilled token for ${account.name}.`);
+  console.log("Review the two permissions, continue to the summary, create the token, and copy its one-time value.");
+  console.log(`If the browser does not open, use:\n${tokenUrl}\n`);
   openUrl(tokenUrl);
   return secretQuestion("Paste the token (input is hidden): ");
+}
+
+function apiTokenTemplateUrl(accountId) {
+  const url = new URL("https://dash.cloudflare.com/profile/api-tokens");
+  url.searchParams.set("permissionGroupKeys", JSON.stringify(tokenPermissions));
+  url.searchParams.set("accountId", accountId);
+  url.searchParams.set("zoneId", "all");
+  url.searchParams.set("name", "Open Resend deployment");
+  return url.toString();
 }
 
 function secretQuestion(prompt) {
