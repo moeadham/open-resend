@@ -370,7 +370,7 @@ adminApp.get("/senders", async (c) => {
   const synced = Number(c.req.query("synced") ?? "");
   const disabled = Number(c.req.query("disabled") ?? "");
   const skipped = Number(c.req.query("skipped") ?? "");
-  return c.html(<Layout title="Domains"><PageHead title="Domains & senders"><div class="actions"><form method="post" action="/senders/domains/sync"><button class="button"><span aria-hidden="true">↻</span> Sync sending domains</button></form><ModalTrigger target="add-sender">Add sender</ModalTrigger></div></PageHead><SenderModal id="add-sender" domains={availableDomains} returnTo="/senders"/>{Number.isFinite(synced) && synced >= 0 && c.req.query("synced") !== undefined && <div class="panel sync-result"><strong>Cloudflare sync complete.</strong><span>{synced} enabled domain{synced === 1 ? "" : "s"} found{disabled ? `; ${disabled} referenced domain${disabled === 1 ? " is" : "s are"} no longer enabled` : ""}{skipped ? `; ${skipped} wildcard entr${skipped === 1 ? "y was" : "ies were"} skipped` : ""}.</span></div>}<div class="panel domain-notice"><p>Domains come from Cloudflare Email Sending.</p><a class="button" href="https://dash.cloudflare.com/?to=/:account/email-service/sending" target="_blank" rel="noreferrer">Open Email Sending ↗</a></div><div class="table-shell responsive-table"><table><thead><tr><th>Sending domain</th><th class="mobile-hide">Cloudflare</th><th class="mobile-hide">Unsubscribe hostname</th><th class="narrow-hide">Unsubscribe status</th><th></th></tr></thead><tbody>{domains.results.map((domain) => { const configured = Boolean(unsubscribeHostnames[domain.name]); return <tr><td>{domain.name}<small class="mobile-detail">{domain.cloudflare_enabled ? (configured ? `Ready · ${unsubscribeHostnames[domain.name]}` : "Enabled · unsubscribe URL missing") : "No longer enabled in Cloudflare"}</small></td><td class="mobile-hide"><span class={domain.cloudflare_enabled ? "badge good" : "badge bad"}>{domain.cloudflare_enabled ? "Enabled" : "Unavailable"}</span></td><td class="mobile-hide">{unsubscribeHostnames[domain.name] ?? "—"}</td><td class="narrow-hide"><span class={configured ? "badge good" : "badge bad"}>{configured ? "URL ready" : "URL missing"}</span></td><td class="row-action"><ActionMenu id={`domain-${domain.id}`}><CopyIdMenuItem id={domain.id}/></ActionMenu></td></tr>; })}</tbody></table>{!domains.results.length && <div class="empty">No enabled sending domains found. Enable one in Cloudflare, then sync.</div>}</div><div class="table-shell responsive-table"><table><thead><tr><th>Sender</th><th class="mobile-hide">Domain</th><th class="mobile-hide">Reply-to</th><th class="mobile-hide">Company & postal address</th><th>Status</th><th></th></tr></thead><tbody>{senders.results.map((sender) => <tr><td><div class="row-title"><span class="row-icon">@</span><span>{sender.name}<small>{sender.email}</small></span></div></td><td class="mobile-hide">{sender.domain_name}</td><td class="mobile-hide">{sender.reply_to ?? "—"}</td><td class="mobile-hide"><div>{sender.company_name ?? sender.name}<small>{sender.postal_address}</small></div></td><td><span class={sender.active ? "badge good" : "badge bad"}>{sender.active ? "Active" : "Inactive"}</span></td><td class="row-action"><ActionMenu id={`sender-${sender.id}`}><CopyIdMenuItem id={sender.id}/></ActionMenu></td></tr>)}</tbody></table>{!senders.results.length && <div class="empty">Sync an enabled domain, then add a sender.</div>}</div></Layout>);
+  return c.html(<Layout title="Domains"><PageHead title="Domains & senders"><div class="actions"><form method="post" action="/senders/domains/sync"><button class="button"><span aria-hidden="true">↻</span> Sync sending domains</button></form><ModalTrigger target="add-sender">Add sender</ModalTrigger></div></PageHead><SenderModal id="add-sender" domains={availableDomains} returnTo="/senders"/>{Number.isFinite(synced) && synced >= 0 && c.req.query("synced") !== undefined && <div class="panel sync-result"><strong>Cloudflare sync complete.</strong><span>{synced} enabled domain{synced === 1 ? "" : "s"} found{disabled ? `; ${disabled} referenced domain${disabled === 1 ? " is" : "s are"} no longer enabled` : ""}{skipped ? `; ${skipped} wildcard entr${skipped === 1 ? "y was" : "ies were"} skipped` : ""}.</span></div>}<div class="panel domain-notice"><p>Domains come from Cloudflare Email Sending.</p><a class="button" href="https://dash.cloudflare.com/?to=/:account/email-service/sending" target="_blank" rel="noreferrer">Open Email Sending ↗</a></div><div class="table-shell responsive-table"><table><thead><tr><th>Sending domain</th><th class="mobile-hide">Cloudflare</th><th class="mobile-hide">Unsubscribe hostname</th><th class="narrow-hide">Unsubscribe status</th><th></th></tr></thead><tbody>{domains.results.map((domain) => { const configured = Boolean(unsubscribeHostnames[domain.name]); return <tr><td>{domain.name}<small class="mobile-detail">{domain.cloudflare_enabled ? (configured ? `Ready · ${unsubscribeHostnames[domain.name]}` : "Enabled · unsubscribe URL missing") : "No longer enabled in Cloudflare"}</small></td><td class="mobile-hide"><span class={domain.cloudflare_enabled ? "badge good" : "badge bad"}>{domain.cloudflare_enabled ? "Enabled" : "Unavailable"}</span></td><td class="mobile-hide">{unsubscribeHostnames[domain.name] ?? "—"}</td><td class="narrow-hide"><span class={configured ? "badge good" : "badge bad"}>{configured ? "URL ready" : "URL missing"}</span></td><td class="row-action"><ActionMenu id={`domain-${domain.id}`}><CopyIdMenuItem id={domain.id}/></ActionMenu></td></tr>; })}</tbody></table>{!domains.results.length && <div class="empty">No enabled sending domains found. Enable one in Cloudflare, then sync.</div>}</div><div class="table-shell responsive-table"><table><thead><tr><th>Sender</th><th class="mobile-hide">Domain</th><th class="mobile-hide">Reply-to</th><th class="mobile-hide">Company & postal address</th><th>Status</th><th></th></tr></thead><tbody>{senders.results.map((sender) => <tr class="clickable-row" data-row-href={`/senders/${sender.id}`} tabindex={0}><td><a class="row-title" href={`/senders/${sender.id}`}><span class="row-icon">@</span><span>{sender.name}<small>{sender.email}</small></span></a></td><td class="mobile-hide">{sender.domain_name}</td><td class="mobile-hide">{sender.reply_to ?? "—"}</td><td class="mobile-hide"><div>{sender.company_name ?? sender.name}<small>{sender.postal_address}</small></div></td><td><span class={sender.active ? "badge good" : "badge bad"}>{sender.active ? "Active" : "Inactive"}</span></td><td class="row-action"><ActionMenu id={`sender-${sender.id}`}><CopyIdMenuItem id={sender.id}/><a class="row-menu-item" href={`/senders/${sender.id}`}><EditIcon class="size-4"/>Edit sender</a></ActionMenu></td></tr>)}</tbody></table>{!senders.results.length && <div class="empty">Sync an enabled domain, then add a sender.</div>}</div></Layout>);
 });
 adminApp.post("/senders/domains/sync", async (c) => {
   const result = await syncSendingDomains(c.env);
@@ -395,6 +395,69 @@ adminApp.post("/senders", async (c) => {
   return c.redirect(safeReturnTo, 303);
 });
 
+adminApp.get("/senders/:id", async (c) => {
+  const senderId = c.req.param("id");
+  const [sender, domains] = await Promise.all([
+    c.env.DB.prepare(`SELECT s.*,d.name AS domain_name,d.cloudflare_enabled,
+      (SELECT COUNT(*) FROM broadcasts b WHERE b.sender_id=s.id) AS broadcast_count
+      FROM senders s JOIN domains d ON d.id=s.domain_id WHERE s.id=?`).bind(senderId).first<SenderRow & { domain_name: string; cloudflare_enabled: number; broadcast_count: number }>(),
+    c.env.DB.prepare("SELECT * FROM domains ORDER BY name").all<DomainRow>(),
+  ]);
+  if (!sender) throw new AppError(404, "not_found", "Sender not found.");
+  const unsubscribeHostnames = parseUnsubscribeHostnames(c.env.UNSUBSCRIBE_HOSTNAMES);
+  const domainReady = Boolean(sender.cloudflare_enabled && unsubscribeHostnames[sender.domain_name]);
+  const status = sender.active && domainReady ? "Active" : sender.active ? "Domain unavailable" : "Inactive";
+  const broadcastCount = Number(sender.broadcast_count);
+  return c.html(<Layout title="Domain sender"><div class="detail-head"><div><a class="crumb" href="/senders">← Domains & senders</a><h1>{sender.name}</h1><p class="muted">{sender.email}</p></div><div class="actions"><span class={`badge ${status === "Active" ? "good" : "bad"}`}>{status}</span><ActionMenu id={`sender-detail-${sender.id}`}><CopyIdMenuItem id={sender.id}/></ActionMenu></div></div>
+    {!domainReady && <div class="panel error"><strong>Sending is unavailable for this domain.</strong><p>Sync domains and configure an unsubscribe hostname before using this sender.</p></div>}
+    <div class="detail-grid"><section class="panel"><h2 class="section-title">Sender details</h2><form method="post" action={`/senders/${sender.id}`}>
+      <div class="form-grid"><div><label>Domain</label><select name="domain_id" required>{domains.results.map((domain) => { const ready = Boolean(domain.cloudflare_enabled && unsubscribeHostnames[domain.name]); return <option value={domain.id} selected={domain.id === sender.domain_id} disabled={!ready && domain.id !== sender.domain_id}>{domain.name}{ready ? "" : " (unavailable)"}</option>; })}</select></div><div><label>Email</label><input name="email" type="email" value={sender.email} required maxlength={320}/></div></div>
+      <div class="form-grid"><div><label>Sender name</label><input name="name" value={sender.name} required maxlength={200}/></div><div><label>Company name</label><input name="company_name" value={sender.company_name ?? ""} maxlength={200}/></div></div>
+      <div class="form-grid"><div><label>Reply-to</label><input name="reply_to" type="email" value={sender.reply_to ?? ""} maxlength={320}/></div><div><label>Status</label><select name="active"><option value="1" selected={Boolean(sender.active)}>Active</option><option value="0" selected={!sender.active}>Inactive</option></select></div></div>
+      <label>Physical postal address</label><textarea name="postal_address" required maxlength={1000}>{sender.postal_address}</textarea><p class="field-help">Line breaks are allowed. This address appears below the company name in every email.</p>
+      <div class="actions form-actions"><button class="primary">Save sender</button></div></form></section>
+      <section class="panel"><h2 class="section-title">Usage</h2><p class="muted">{broadcastCount ? `Used by ${broadcastCount.toLocaleString("en")} broadcast${broadcastCount === 1 ? "" : "s"}.` : "Not used by any broadcasts."}</p><p class="muted">Created {relativeDate(sender.created_at)}<br/>Updated {relativeDate(sender.updated_at)}</p></section></div>
+    <section class="panel danger-zone"><h2 class="section-title">Delete sender</h2><p class="muted">{broadcastCount ? "This sender cannot be deleted while broadcasts reference it." : "This permanently removes the sender. The sending domain is not affected."}</p><form method="post" action={`/senders/${sender.id}/delete`} data-confirm="Delete this sender permanently?"><button class="danger" disabled={broadcastCount > 0}>Delete sender</button></form></section></Layout>);
+});
+
+adminApp.post("/senders/:id", async (c) => {
+  const senderId = c.req.param("id");
+  const existing = await c.env.DB.prepare("SELECT domain_id FROM senders WHERE id=?").bind(senderId).first<{ domain_id: string }>();
+  if (!existing) throw new AppError(404, "not_found", "Sender not found.");
+  const form = await c.req.parseBody();
+  const domainId = textField(form.domain_id, "domain_id", 100);
+  const domain = await c.env.DB.prepare("SELECT name,cloudflare_enabled FROM domains WHERE id=?").bind(domainId).first<{ name: string; cloudflare_enabled: number }>();
+  if (!domain) throw new AppError(404, "not_found", "Domain not found.");
+  const unsubscribeConfigured = Boolean(parseUnsubscribeHostnames(c.env.UNSUBSCRIBE_HOSTNAMES)[domain.name]);
+  if (domainId !== existing.domain_id && (!domain.cloudflare_enabled || !unsubscribeConfigured)) throw new AppError(409, "conflict", "Choose an enabled domain with an unsubscribe hostname.");
+  const email = normalizeEmail(textField(form.email, "email", 320));
+  if (!isEmail(email) || email.split("@")[1] !== domain.name.toLowerCase()) throw new AppError(422, "validation_error", "Sender email must be on the selected domain.");
+  const replyTo = String(form.reply_to ?? "").trim();
+  if (replyTo && !isEmail(normalizeEmail(replyTo))) throw new AppError(422, "validation_error", "Reply-to is invalid.");
+  const name = singleLineSenderField(form.name, "Sender name", 200);
+  const companyName = optionalSingleLineSenderField(form.company_name, "Company name", 200) ?? name;
+  const postalAddress = postalAddressField(form.postal_address);
+  const active = String(form.active ?? "") === "1" ? 1 : String(form.active ?? "") === "0" ? 0 : null;
+  if (active === null) throw new AppError(422, "validation_error", "Sender status is invalid.");
+  try {
+    await c.env.DB.prepare("UPDATE senders SET domain_id=?,email=?,name=?,company_name=?,reply_to=?,postal_address=?,active=?,updated_at=? WHERE id=?")
+      .bind(domainId, email, name, companyName, replyTo ? normalizeEmail(replyTo) : null, postalAddress, active, nowIso(), senderId).run();
+  } catch (error) {
+    rethrowSenderEmailConflict(error);
+  }
+  return c.redirect(`/senders/${senderId}`, 303);
+});
+
+adminApp.post("/senders/:id/delete", async (c) => {
+  const senderId = c.req.param("id");
+  const sender = await c.env.DB.prepare("SELECT id FROM senders WHERE id=?").bind(senderId).first<{ id: string }>();
+  if (!sender) throw new AppError(404, "not_found", "Sender not found.");
+  const broadcast = await c.env.DB.prepare("SELECT id FROM broadcasts WHERE sender_id=? LIMIT 1").bind(senderId).first<{ id: string }>();
+  if (broadcast) throw new AppError(409, "conflict", "This sender is used by one or more broadcasts and cannot be deleted.");
+  await c.env.DB.prepare("DELETE FROM senders WHERE id=?").bind(senderId).run();
+  return c.redirect("/senders", 303);
+});
+
 adminApp.get("/api-keys", async (c) => {
   return c.html(await apiKeysPage(c));
 });
@@ -414,7 +477,7 @@ async function apiKeysPage(c: AdminContext, createdKey?: string) {
 }
 
 function Layout({ title, children }: { title: string; children: Child }) {
-  const active = title.toLowerCase().includes("broadcast") ? "broadcasts" : title.toLowerCase().includes("audience") ? "audience" : title.toLowerCase().includes("domain") ? "domains" : title.toLowerCase().includes("api key") ? "keys" : "";
+  const active = title.toLowerCase().includes("broadcast") ? "broadcasts" : title.toLowerCase().includes("audience") ? "audience" : title.toLowerCase().includes("domain") || title.toLowerCase().includes("sender") ? "domains" : title.toLowerCase().includes("api key") ? "keys" : "";
   return <html lang="en" class="dark"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>{title} · Open Re-send</title><link rel="stylesheet" href="/assets/admin.css"/></head><body><div class="app-shell"><aside class="sidebar"><a class="workspace" href="/broadcasts"><span class="workspace-mark">OR</span><span>Open Re-send</span></a><nav class="side-nav"><NavLink href="/broadcasts" icon={<BroadcastIcon class="size-4"/>} label="Broadcasts" active={active === "broadcasts"}/><NavLink href="/audience" icon={<AudienceIcon class="size-4"/>} label="Audience" active={active === "audience"}/><NavLink href="/senders" icon={<DomainIcon class="size-4"/>} label="Domains" active={active === "domains"}/><NavLink href="/api-keys" icon={<KeyIcon class="size-4"/>} label="API keys" active={active === "keys"}/></nav><div class="side-foot">Protected by Cloudflare Access</div></aside><main class="main"><div class="content">{children}</div></main></div><script type="module" src="/assets/admin.js"></script></body></html>;
 }
 function NavLink({ href, icon, label, active }: { href: string; icon: Child; label: string; active: boolean }) { return <a class={`side-link ${active ? "active" : ""}`} href={href}><span class="nav-icon">{icon}</span><span>{label}</span></a>; }
@@ -473,6 +536,7 @@ function singleLineSenderField(value: string | File | undefined, field: string, 
 function optionalSingleLineSenderField(value: string | File | undefined, field: string, max: number): string | null { const result = optionalFormText(value, max); if (result) assertSafeSenderText(result, field, false); return result; }
 function postalAddressField(value: string | File | undefined): string { const result = normalizeLineEndings(textField(value, "Postal address", 1000)); assertSafeSenderText(result, "Postal address", true); return result; }
 function assertSafeSenderText(value: string, field: string, allowLineFeeds: boolean): void { const invalid = allowLineFeeds ? /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/ : /[\u0000-\u001F\u007F]/; if (invalid.test(value)) throw new AppError(422, "validation_error", `${field} contains invalid control characters.`); }
+function rethrowSenderEmailConflict(error: unknown): never { if (error instanceof Error && /UNIQUE constraint failed: senders\.email/i.test(error.message)) throw new AppError(409, "conflict", "A sender with this email already exists."); throw error; }
 function capitalize(value: string): string { return value.charAt(0).toUpperCase() + value.slice(1); }
 function relativeDate(value: string): string { const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000)); if (seconds < 60) return "just now"; if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`; if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`; if (seconds < 2_592_000) return `${Math.floor(seconds / 86400)}d ago`; return new Date(value).toLocaleDateString("en", { month: "short", day: "numeric", year: new Date(value).getFullYear() === new Date().getFullYear() ? undefined : "numeric" }); }
 function formatDateTime(value: string): string { return new Date(value).toLocaleString("en", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }) + " UTC"; }

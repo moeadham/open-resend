@@ -167,7 +167,7 @@
 .row-menu-popover { @apply fixed m-0 w-44 rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-2xl; inset: auto; }
 .row-menu-popover::backdrop { background: transparent; }
 .row-menu-popover form { @apply m-0; }
-.row-menu-item { @apply min-h-9 w-full justify-start rounded-lg border-transparent bg-transparent px-2.5 py-2 text-left text-sm font-normal hover:bg-secondary; }
+.row-menu-item { @apply flex min-h-9 w-full items-center justify-start gap-2 rounded-lg border-transparent bg-transparent px-2.5 py-2 text-left text-sm font-normal hover:bg-secondary; }
 .row-menu-item[data-copied="true"] { @apply text-success; }
 .row-menu-item.destructive-menu-item { @apply text-destructive hover:bg-destructive-soft; }
 .clickable-row { @apply cursor-pointer transition-colors hover:bg-secondary/40 focus-within:bg-secondary/40; }
