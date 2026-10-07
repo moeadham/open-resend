@@ -74,7 +74,10 @@ async function main() {
   if (missingDomains.length) {
     fail(`These domains are not enabled for Cloudflare Email Sending: ${missingDomains.join(", ")}. Enable them first at https://dash.cloudflare.com/?to=/:account/email-service/sending`);
   }
-  for (const domain of sendingDomains) console.log(`✓ ${domain} is enabled`);
+  for (const domain of sendingDomains) {
+    enabledDomains.get(domain).zoneId = resolveEmailSendingZoneId(domain, account.id);
+    console.log(`✓ ${domain} is enabled`);
+  }
 
   section("Checking existing resources");
   const databaseName = existingDeployment?.d1DatabaseName ?? workerName;
@@ -323,6 +326,24 @@ function createDatabase(name, accountId) {
   const database = databases.find((item) => item.name === name);
   if (!database) fail(`D1 ${name} was created but could not be found afterward.`);
   return database;
+}
+
+function resolveEmailSendingZoneId(domain, accountId) {
+  // The Email Sending list table exposes the sending-domain tag, not the DNS
+  // zone ID required by Queue event subscriptions. Let Wrangler perform its
+  // authenticated zone lookup and read the resolved ID from its debug request.
+  const result = spawnSync("npx", ["--no-install", "wrangler", "email", "sending", "list", domain], {
+    cwd: root,
+    env: { ...accountEnv(accountId), WRANGLER_LOG: "debug" },
+    encoding: "utf8",
+    stdio: ["inherit", "pipe", "pipe"],
+  });
+  const output = stripAnsi(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
+  if (result.error) fail(`Could not look up the DNS zone for ${domain}: ${result.error.message}`);
+  if (result.status !== 0) fail(`Could not look up the DNS zone for ${domain}.`);
+  const match = output.match(/\/zones\/([a-f0-9]{32})\/email\/sending\/subdomains/i);
+  if (!match) fail(`Wrangler did not return the DNS zone ID for ${domain}.`);
+  return match[1];
 }
 
 async function ensureEmailEventSubscriptions({ accountId, domains, enabledDomains, queue }) {
