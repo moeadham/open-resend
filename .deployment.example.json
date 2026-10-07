@@ -1,5 +1,6 @@
 {
   "workerName": "cloudflare-resend",
+  "adminHostname": "resend.example.com",
   "apiHostname": "mail-api.example.com",
   "unsubscribeHostnames": {
     "example.com": "mail.example.com",

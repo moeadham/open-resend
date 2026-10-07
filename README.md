@@ -170,10 +170,11 @@ export CLOUDFLARE_API_TOKEN="paste-token-here"
    npx wrangler queues create cloudflare-resend-email-events
    ```
 
-5. Copy `.deployment.example.json` to `.deployment.json`, enter the API hostname and D1 database ID, and map each sending domain to its unsubscribe hostname:
+5. Copy `.deployment.example.json` to `.deployment.json`, enter the admin hostname, API hostname, and D1 database ID, and map each sending domain to its unsubscribe hostname:
 
    ```json
    {
+     "adminHostname": "resend.example.com",
      "apiHostname": "mail-api.example.com",
      "unsubscribeHostnames": {
        "example.com": "mail.example.com",

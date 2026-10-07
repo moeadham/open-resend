@@ -238,7 +238,7 @@ async function main() {
   console.log(`Cloudflare account: ${account.name} (${account.id})\n`);
 
   const workerName = await ask("Worker name", existingDeployment?.workerName ?? "open-resend");
-  const adminHostname = normalizeHostname(await ask("Access-protected admin hostname", existingTerraformVars.admin_hostname ?? "resend.example.com"));
+  const adminHostname = normalizeHostname(await ask("Access-protected admin hostname", existingDeployment?.adminHostname ?? existingTerraformVars.admin_hostname ?? "resend.example.com"));
   const apiHostname = normalizeHostname(await ask("Public API hostname", existingDeployment?.apiHostname ?? "mail-api.example.com"));
   const existingDomains = Object.keys(existingDeployment?.unsubscribeHostnames ?? {});
   const sendingDomains = parseDomains(await ask("Enabled Email Sending domains (comma-separated)", existingDomains.join(", ") || "example.com"));
@@ -330,6 +330,7 @@ async function main() {
 
   const deployment = {
     workerName,
+    adminHostname,
     apiHostname,
     unsubscribeHostnames,
     d1DatabaseId: database.uuid,
