@@ -10,12 +10,12 @@ function hostname(request: Request): string {
 
 export function isAdminRequest(request: Request, env: Env): boolean {
   const host = hostname(request);
-  return host === env.ADMIN_HOSTNAME.toLowerCase() || (isLocalHost(host) && env.ENVIRONMENT !== "production");
+  return host === env.ADMIN_HOSTNAME.toLowerCase() || (isLocalHost(host) && String(env.ENVIRONMENT) !== "production");
 }
 
 export function isApiRequest(request: Request, env: Env): boolean {
   const host = hostname(request);
-  if (host === env.API_HOSTNAME.toLowerCase() || (isLocalHost(host) && env.ENVIRONMENT !== "production")) return true;
+  if (host === env.API_HOSTNAME.toLowerCase() || (isLocalHost(host) && String(env.ENVIRONMENT) !== "production")) return true;
   if (!new URL(request.url).pathname.startsWith("/unsubscribe/")) return false;
   try {
     return Object.values(parseUnsubscribeHostnames(env.UNSUBSCRIBE_HOSTNAMES)).includes(host);
@@ -30,7 +30,7 @@ function isLocalHost(host: string): boolean {
 
 export async function requireAccess(c: AppContext, next: Next): Promise<Response | void> {
   const host = hostname(c.req.raw);
-  if (isLocalHost(host) && c.env.ENVIRONMENT !== "production" && String(c.env.ALLOW_LOCAL_ADMIN) === "true") {
+  if (isLocalHost(host) && String(c.env.ENVIRONMENT) !== "production" && String(c.env.ALLOW_LOCAL_ADMIN) === "true") {
     await next();
     return;
   }

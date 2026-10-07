@@ -11,6 +11,8 @@
     "config:deploy": "node scripts/render-wrangler.mjs",
     "check:deployment": "node scripts/verify-deployment-config.mjs",
     "test": "vitest run",
+    "test:stress": "vitest run --config vitest.stress.config.ts",
+    "emulator:seed:stress": "node scripts/seed-stress-emulator.mjs",
     "predev": "npm run build:assets",
     "dev": "wrangler dev",
     "predeploy:dry": "npm run check",

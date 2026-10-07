@@ -2,8 +2,8 @@ import { adminApp } from "./admin";
 import { apiApp } from "./api";
 import { isAdminRequest, isApiRequest } from "./auth";
 import { logError } from "./lib";
-import { processDeadLetter, processDeliveryMessage, processEmailEvent } from "./delivery";
-import type { DeliveryQueueMessage, EmailEventMessage, QueueBody } from "./types";
+import { processBroadcastQueueMessage, processDeadLetter, processDeliveryMessage, processEmailEvent } from "./delivery";
+import type { BroadcastQueueMessage, DeliveryQueueMessage, EmailEventMessage, QueueBody } from "./types";
 
 export { BroadcastSchedule } from "./schedule";
 
@@ -25,13 +25,15 @@ export default {
 
   async queue(batch: MessageBatch<QueueBody>, env: Env): Promise<void> {
     if (batch.queue === "cloudflare-resend-deliveries-dlq") {
-      await processDeadLetter(batch as MessageBatch<DeliveryQueueMessage>, env);
+      await processDeadLetter(batch as MessageBatch<DeliveryQueueMessage | BroadcastQueueMessage>, env);
       return;
     }
     for (const message of batch.messages) {
       try {
         if (batch.queue === "cloudflare-resend-email-events") {
           await processEmailEvent(message as Message<EmailEventMessage>, env);
+        } else if ("broadcastId" in message.body) {
+          await processBroadcastQueueMessage(message as Message<BroadcastQueueMessage>, env);
         } else {
           await processDeliveryMessage(message as Message<DeliveryQueueMessage>, env);
         }

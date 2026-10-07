@@ -50,13 +50,13 @@ describe("Resend-compatible API", () => {
   });
 
   it("validates Access JWT signature, issuer, audience, and expiration", async () => {
-    const valid = await accessToken("replace-with-access-application-aud", "5 minutes");
+    const valid = await accessToken(env.ACCESS_AUD, "5 minutes");
     expect((await SELF.fetch("https://admin.example.com/", { headers: { "Cf-Access-Jwt-Assertion": valid } })).status).toBe(200);
 
     const wrongAudience = await accessToken("wrong-audience", "5 minutes");
     expect((await SELF.fetch("https://admin.example.com/", { headers: { "Cf-Access-Jwt-Assertion": wrongAudience } })).status).toBe(401);
 
-    const expired = await accessToken("replace-with-access-application-aud", Math.floor(Date.now() / 1000) - 60);
+    const expired = await accessToken(env.ACCESS_AUD, Math.floor(Date.now() / 1000) - 60);
     expect((await SELF.fetch("https://admin.example.com/", { headers: { "Cf-Access-Jwt-Assertion": expired } })).status).toBe(401);
     expect((await SELF.fetch("https://admin.example.com/", { headers: { "Cf-Access-Jwt-Assertion": "not-a-jwt" } })).status).toBe(401);
   });
@@ -68,7 +68,7 @@ describe("Resend-compatible API", () => {
       env.DB.prepare("INSERT INTO segments (id,name,created_at,updated_at) VALUES ('segment-admin','Updates',?,?)").bind(now, now),
       env.DB.prepare("INSERT INTO topics (id,name,description,default_subscription,visibility,created_at,updated_at) VALUES ('topic-admin','Product news','Release notes','opt_in','public',?,?)").bind(now, now),
     ]);
-    const token = await accessToken("replace-with-access-application-aud", "5 minutes");
+    const token = await accessToken(env.ACCESS_AUD, "5 minutes");
     const authHeaders = { "Cf-Access-Jwt-Assertion": token };
     const detail = await SELF.fetch("https://admin.example.com/contacts/contact-admin", { headers: authHeaders });
     expect(detail.status).toBe(200);
@@ -114,7 +114,7 @@ describe("Resend-compatible API", () => {
   });
 
   it("shows a newly created API key once in a copyable, masked dialog", async () => {
-    const token = await accessToken("replace-with-access-application-aud", "5 minutes");
+    const token = await accessToken(env.ACCESS_AUD, "5 minutes");
     const response = await SELF.fetch("https://admin.example.com/api-keys", {
       method: "POST",
       headers: { "Cf-Access-Jwt-Assertion": token, Origin: "https://admin.example.com" },
@@ -140,7 +140,7 @@ describe("Resend-compatible API", () => {
   });
 
   it("uses synced sending domains before creating senders", async () => {
-    const token = await accessToken("replace-with-access-application-aud", "5 minutes");
+    const token = await accessToken(env.ACCESS_AUD, "5 minutes");
     const authHeaders = { "Cf-Access-Jwt-Assertion": token };
     const page = await SELF.fetch("https://admin.example.com/senders", { headers: authHeaders });
     const html = await page.text();
@@ -196,7 +196,7 @@ describe("Resend-compatible API", () => {
       env.DB.prepare("INSERT INTO segment_contacts (segment_id,contact_id,status,subscribed_at,updated_at) VALUES ('segment-broadcast','contact-broadcast','subscribed',?,?)").bind(now, now),
       env.DB.prepare("INSERT INTO broadcasts (id,name,segment_id,sender_id,from_value,subject,html,text,status,created_at,updated_at) VALUES ('broadcast-admin','Draft update','segment-broadcast','sender-admin','Example News <news@example.com>','Hello','<p>Hello</p>','Hello','draft',?,?)").bind(now, now),
     ]);
-    const token = await accessToken("replace-with-access-application-aud", "5 minutes");
+    const token = await accessToken(env.ACCESS_AUD, "5 minutes");
     const response = await SELF.fetch("https://admin.example.com/broadcasts/broadcast-admin", { headers: { "Cf-Access-Jwt-Assertion": token } });
     expect(response.status).toBe(200);
     const html = await response.text();
@@ -225,7 +225,7 @@ describe("Resend-compatible API", () => {
   });
 
   it("uses an empty campaign body instead of saving editor placeholder text", async () => {
-    const token = await accessToken("replace-with-access-application-aud", "5 minutes");
+    const token = await accessToken(env.ACCESS_AUD, "5 minutes");
     const response = await SELF.fetch("https://admin.example.com/broadcasts/new", { headers: { "Cf-Access-Jwt-Assertion": token } });
     expect(response.status).toBe(200);
     const html = await response.text();
@@ -243,7 +243,7 @@ describe("Resend-compatible API", () => {
         "INSERT INTO broadcasts (id,name,segment_id,sender_id,from_value,subject,html,text,status,created_at,updated_at) VALUES (?,?, 'segment-page','sender-page','Pages <pages@example.com>','Page','<p>Page</p>','Page','draft',?,?)",
       ).bind(`broadcast-page-${index}`, `Page ${index}`, now, now)),
     ]);
-    const token = await accessToken("replace-with-access-application-aud", "5 minutes");
+    const token = await accessToken(env.ACCESS_AUD, "5 minutes");
     const headers = { "Cf-Access-Jwt-Assertion": token };
     const first = await (await SELF.fetch("https://admin.example.com/broadcasts", { headers })).text();
     expect(first).toContain("Page 1 · 41 broadcasts · 40 items");
