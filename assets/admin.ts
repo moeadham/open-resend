@@ -24,6 +24,50 @@ for (const form of document.querySelectorAll<HTMLFormElement>("form[data-confirm
   });
 }
 
+for (const button of document.querySelectorAll<HTMLButtonElement>("[data-copy-value]")) {
+  button.addEventListener("click", async () => {
+    const value = button.dataset.copyValue;
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = value;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.append(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      textarea.remove();
+    }
+    const label = button.querySelector<HTMLElement>("[data-copy-text]");
+    if (label) label.textContent = "Copied";
+    button.dataset.copied = "true";
+    const menu = button.closest<HTMLElement>("[data-action-menu]");
+    if (menu && "hidePopover" in menu) menu.hidePopover();
+    window.setTimeout(() => {
+      if (label) label.textContent = "Copy ID";
+      delete button.dataset.copied;
+    }, 1600);
+  });
+}
+
+for (const trigger of document.querySelectorAll<HTMLButtonElement>("[data-action-menu-trigger]")) {
+  trigger.addEventListener("click", () => {
+    const menuId = trigger.getAttribute("popovertarget");
+    const menu = menuId ? document.getElementById(menuId) : null;
+    if (!menu) return;
+    const rect = trigger.getBoundingClientRect();
+    const menuWidth = 176;
+    menu.style.left = `${Math.max(8, Math.min(window.innerWidth - menuWidth - 8, rect.right - menuWidth))}px`;
+    menu.style.top = `${rect.bottom + 6}px`;
+    window.requestAnimationFrame(() => {
+      if (rect.bottom + 6 + menu.offsetHeight > window.innerHeight - 8) menu.style.top = `${Math.max(8, rect.top - menu.offsetHeight - 6)}px`;
+    });
+  });
+}
+
 datePicker();
 combobox();
 

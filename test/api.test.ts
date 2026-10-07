@@ -76,6 +76,16 @@ describe("Resend-compatible API", () => {
     expect(detailHtml).toContain("Contact details");
     expect(detailHtml).toContain("Segments are internal recipient groups");
     expect(detailHtml).toContain("Product news");
+    expect(detailHtml).toContain('data-copy-value="contact-admin"');
+
+    const contactsHtml = await (await SELF.fetch("https://admin.example.com/audience", { headers: authHeaders })).text();
+    const segmentsHtml = await (await SELF.fetch("https://admin.example.com/audience/segments", { headers: authHeaders })).text();
+    const topicsHtml = await (await SELF.fetch("https://admin.example.com/audience/topics", { headers: authHeaders })).text();
+    expect(contactsHtml).toContain('data-copy-value="contact-admin"');
+    expect(segmentsHtml).toContain('data-copy-value="segment-admin"');
+    expect(topicsHtml).toContain('data-copy-value="topic-admin"');
+    const apiKeysHtml = await (await SELF.fetch("https://admin.example.com/api-keys", { headers: authHeaders })).text();
+    expect(apiKeysHtml).not.toContain('data-copy-value="test-key"');
 
     const added = await SELF.fetch("https://admin.example.com/contacts/contact-admin/segments", {
       method: "POST",
@@ -128,7 +138,11 @@ describe("Resend-compatible API", () => {
       body: new URLSearchParams({ domain_id: domain?.id ?? "", email: "news@example.com", name: "News", postal_address: "1 Main Street", return_to: "/senders" }),
     });
     expect(created.status).toBe(303);
-    expect(await env.DB.prepare("SELECT d.name FROM senders s JOIN domains d ON d.id=s.domain_id WHERE s.email='news@example.com'").first()).toMatchObject({ name: "example.com" });
+    const sender = await env.DB.prepare("SELECT s.id,d.name FROM senders s JOIN domains d ON d.id=s.domain_id WHERE s.email='news@example.com'").first<{ id: string; name: string }>();
+    expect(sender).toMatchObject({ name: "example.com" });
+    const updatedPageHtml = await (await SELF.fetch("https://admin.example.com/senders", { headers: authHeaders })).text();
+    expect(updatedPageHtml).toContain(`data-copy-value="${domain?.id}"`);
+    expect(updatedPageHtml).toContain(`data-copy-value="${sender?.id}"`);
 
     const invalid = await SELF.fetch("https://admin.example.com/senders", {
       method: "POST", headers: { ...authHeaders, Origin: "https://admin.example.com" },
@@ -162,6 +176,7 @@ describe("Resend-compatible API", () => {
     expect(html).toContain("data-date-picker");
     expect(html).toContain("Send yourself a preview");
     expect(html).toContain('id="send-broadcast"');
+    expect(html).toContain('data-copy-value="broadcast-admin"');
     expect(html).not.toContain("Retry failures");
 
     await env.DB.batch([

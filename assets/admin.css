@@ -163,6 +163,13 @@
 .row-title small { @apply block truncate text-xs font-normal text-foreground-soft; }
 .row-icon { @apply grid size-8 shrink-0 place-items-center rounded-lg border border-success/40 bg-success-soft text-xs text-success; }
 .row-action { @apply whitespace-nowrap text-right; }
+.row-menu-trigger { @apply size-8 min-h-8 border-transparent bg-transparent p-0 text-foreground-muted hover:bg-secondary hover:text-foreground; }
+.row-menu-popover { @apply fixed m-0 w-44 rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-2xl; inset: auto; }
+.row-menu-popover::backdrop { background: transparent; }
+.row-menu-popover form { @apply m-0; }
+.row-menu-item { @apply min-h-9 w-full justify-start rounded-lg border-transparent bg-transparent px-2.5 py-2 text-left text-sm font-normal hover:bg-secondary; }
+.row-menu-item[data-copied="true"] { @apply text-success; }
+.row-menu-item.destructive-menu-item { @apply text-destructive hover:bg-destructive-soft; }
 .clickable-row { @apply cursor-pointer transition-colors hover:bg-secondary/40 focus-within:bg-secondary/40; }
 .fake-check { @apply inline-block size-5 rounded-md border border-border-strong bg-background-subtle; }
 .check-cell { @apply w-12; }
