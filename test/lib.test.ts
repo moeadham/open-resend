@@ -47,6 +47,11 @@ describe("mail helpers", () => {
     expect(raw).toContain("List-Unsubscribe-Post: List-Unsubscribe=One-Click");
     expect(raw).toContain("Reply-To: <replies@example.com>");
     expect(raw).toContain("1 Main Street");
+    expect(raw).toContain('role="contentinfo"');
+    expect(raw).toContain("Example News");
+    expect(raw).toContain("text-align:center");
+    expect(raw).toContain("text-underline-offset:2px");
+    expect(raw).not.toContain('<hr>');
     expect(raw.indexOf("text/plain")).toBeLessThan(raw.indexOf("text/html"));
   });
 

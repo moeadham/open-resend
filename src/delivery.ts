@@ -171,9 +171,8 @@ export function buildCampaignMime(detail: DeliveryDetail, unsubscribeUrl: string
   const replyTo = broadcastReplyTo(detail.reply_to_json) ?? detail.sender_reply_to;
   if (replyTo) rejectHeaderBreaks(replyTo, "reply-to");
 
-  const postal = escapeHtml(detail.postal_address).replaceAll("\n", "<br>");
-  const htmlFooter = `<hr><p style="color:#666;font-size:12px">${postal}<br><a href="${escapeHtml(unsubscribeUrl)}">Unsubscribe</a></p>`;
-  const textFooter = `\n\n---\n${detail.postal_address}\nUnsubscribe: ${unsubscribeUrl}`;
+  const htmlFooter = campaignHtmlFooter(detail.sender_name, detail.postal_address, unsubscribeUrl, "Unsubscribe");
+  const textFooter = campaignTextFooter(detail.sender_name, detail.postal_address, unsubscribeUrl, "Unsubscribe");
   const preview = detail.preview_text
     ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0">${escapeHtml(detail.preview_text)}</div>`
     : "";
@@ -314,14 +313,23 @@ export async function sendTestEmail(
   mime.setHeader("X-Campaign-Test", "true");
   mime.addMessage({
     contentType: "text/plain",
-    data: `${input.text ?? stripHtml(input.html)}\n\n---\n${input.sender.postal_address}\nUnsubscribe preview: ${unsubscribeUrl}`,
+    data: `${input.text ?? stripHtml(input.html)}${campaignTextFooter(input.sender.name, input.sender.postal_address, unsubscribeUrl, "Unsubscribe preview")}`,
   });
   mime.addMessage({
     contentType: "text/html",
-    data: `${input.html}<hr><p style="color:#666;font-size:12px">${escapeHtml(input.sender.postal_address).replaceAll("\n", "<br>")}<br><a href="${unsubscribeUrl}">Unsubscribe preview</a></p>`,
+    data: `${input.html}${campaignHtmlFooter(input.sender.name, input.sender.postal_address, unsubscribeUrl, "Unsubscribe preview")}`,
   });
   const result = await env.EMAIL.send(new EmailMessage(input.sender.email, input.to, mime.asRaw()));
   return result.messageId;
+}
+
+function campaignHtmlFooter(senderName: string, postalAddress: string, unsubscribeUrl: string, linkLabel: string): string {
+  const postal = escapeHtml(postalAddress).replaceAll("\n", "<br>");
+  return `<div role="contentinfo" style="box-sizing:border-box;max-width:600px;margin:40px auto 0;padding:24px 16px 8px;border-top:1px solid #e5e7eb;text-align:center;color:#6b7280;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:12px;line-height:1.6"><p style="margin:0 0 4px;padding:0;color:#4b5563;font-weight:600">${escapeHtml(senderName)}</p><p style="margin:0 0 12px;padding:0">${postal}</p><p style="margin:0;padding:0"><a href="${escapeHtml(unsubscribeUrl)}" rel="noopener noreferrer nofollow" target="_blank" style="color:#0670db;text-decoration:underline;text-underline-offset:2px">${escapeHtml(linkLabel)}</a></p></div>`;
+}
+
+function campaignTextFooter(senderName: string, postalAddress: string, unsubscribeUrl: string, linkLabel: string): string {
+  return `\n\n—\n${senderName}\n${postalAddress}\n${linkLabel}: ${unsubscribeUrl}`;
 }
 
 export async function retryFailedDeliveries(env: Env, broadcastId: string): Promise<number> {
