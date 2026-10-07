@@ -110,7 +110,7 @@ describe("Resend-compatible API", () => {
     const html = await page.text();
     expect(html).toContain("Add domain");
     expect(html).toContain("Add sender");
-    expect(html).toContain("Domains must be enabled in Cloudflare Email Sending");
+    expect(html).toContain("Enable domains in Cloudflare Email Sending before adding them here.");
     expect(html).toContain("Open Email Sending");
     expect(html).toContain('class="button"');
     expect(html).toContain("https://dash.cloudflare.com/?to=/:account/email-service/sending");

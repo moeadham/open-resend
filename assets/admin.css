@@ -179,6 +179,22 @@
 .segment-add { min-width: min(470px, 100%); }
 .membership-actions { @apply justify-end; }
 .mobile-detail, .narrow-detail { @apply hidden; }
+.domain-notice { @apply flex items-center justify-between gap-4; }
+.domain-notice p { @apply m-0 text-sm text-foreground-muted; }
+
+.combobox { @apply relative min-w-0 flex-1; }
+.combobox-trigger { @apply w-full justify-between bg-background-subtle text-left font-normal; }
+.combobox-trigger [data-combobox-value-display] { @apply min-w-0 truncate; }
+.combobox-chevron { @apply text-lg leading-none text-foreground-soft; }
+.combobox-content { @apply z-50 max-h-72 min-w-60 overflow-hidden rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-2xl; }
+.combobox-search { @apply mb-1 flex items-center gap-2 border-b border-border-subtle px-2 pb-1.5 text-foreground-soft; }
+.combobox-search input { @apply min-h-8 border-0 bg-transparent p-0 shadow-none focus-visible:ring-0; }
+.combobox-list { @apply max-h-56 overflow-y-auto; }
+.combobox-item { @apply min-h-9 w-full justify-between border-transparent bg-transparent px-2.5 py-2 text-left font-normal hover:bg-secondary; }
+.combobox-item[data-highlighted="true"] { @apply bg-secondary; }
+.combobox-check { @apply invisible text-success; }
+.combobox-item[data-selected="true"] .combobox-check { @apply visible; }
+.combobox-empty { @apply px-3 py-8 text-center text-sm text-foreground-soft; }
 
 .modal { @apply m-auto max-h-[calc(100dvh-2rem)] w-[min(32rem,calc(100vw-2rem))] overflow-auto rounded-2xl border border-border bg-popover p-0 text-popover-foreground shadow-2xl; }
 .modal::backdrop { background: var(--overlay-scrim); backdrop-filter: blur(5px); }
@@ -320,6 +336,7 @@
   .editor-field-control { @apply grid-cols-1; }
   .editor-field-control .button, .editor-field-control button { @apply justify-self-start; }
   .broadcast-review-head, .detail-head, .section-head { @apply flex-col; }
+  .domain-notice { @apply flex-col items-stretch; }
   .broadcast-review-head .actions, .broadcast-review-head .button { @apply w-full; }
   .broadcast-send-column { @apply grid-cols-1; }
   .broadcast-send-column .review-card:first-child, .broadcast-send-column .campaign-details { @apply col-span-1; }

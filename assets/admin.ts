@@ -1,4 +1,5 @@
 import Quill from "quill";
+import { combobox } from "@kiwa-ui/enhance/combobox";
 import { datePicker } from "@kiwa-ui/enhance/date-picker";
 
 const editor = document.querySelector<HTMLElement>("[data-rich-editor]");
@@ -24,6 +25,7 @@ for (const form of document.querySelectorAll<HTMLFormElement>("form[data-confirm
 }
 
 datePicker();
+combobox();
 
 for (const form of document.querySelectorAll<HTMLFormElement>("form[data-schedule-form]")) {
   const dateInput = form.querySelector<HTMLInputElement>("[data-schedule-date]");
