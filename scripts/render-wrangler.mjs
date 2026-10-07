@@ -60,6 +60,7 @@ const config = {
     ...base.vars,
     ADMIN_HOSTNAME: adminHostname,
     API_HOSTNAME: apiHostname,
+    CLOUDFLARE_ACCOUNT_ID: requireAccountId(deployment.accountId),
     UNSUBSCRIBE_HOSTNAMES: JSON.stringify(unsubscribeHostnames),
     ACCESS_TEAM_DOMAIN: accessTeamDomain,
     ACCESS_AUD: accessAud,
@@ -141,6 +142,11 @@ function optionalString(value, fallback) {
 
 function isUuid(value) {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function requireAccountId(value) {
+  if (typeof value !== "string" || !/^[0-9a-f]{32}$/i.test(value)) fail("accountId must be a 32-character Cloudflare account ID.");
+  return value;
 }
 
 function fail(message) {

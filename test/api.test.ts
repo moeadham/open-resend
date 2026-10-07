@@ -139,60 +139,51 @@ describe("Resend-compatible API", () => {
     expect(await nextVisit.text()).not.toContain(raw);
   });
 
-  it("registers sending domains before creating senders", async () => {
+  it("uses synced sending domains before creating senders", async () => {
     const token = await accessToken(env.ACCESS_AUD, "5 minutes");
     const authHeaders = { "Cf-Access-Jwt-Assertion": token };
     const page = await SELF.fetch("https://admin.example.com/senders", { headers: authHeaders });
     const html = await page.text();
-    expect(html).toContain("Add domain");
+    expect(html).toContain("Sync sending domains");
     expect(html).toContain("Add sender");
-    expect(html).toContain("Enable domains in Cloudflare Email Sending before adding them here.");
+    expect(html).toContain("Domains come from Cloudflare Email Sending.");
     expect(html).toContain("Open Email Sending");
     expect(html).toContain('class="button"');
     expect(html).toContain("https://dash.cloudflare.com/?to=/:account/email-service/sending");
 
-    const registered = await SELF.fetch("https://admin.example.com/senders/domains", {
-      method: "POST", redirect: "manual", headers: { ...authHeaders, Origin: "https://admin.example.com" },
-      body: new URLSearchParams({ domain: "Example.COM" }),
-    });
-    expect(registered.status).toBe(303);
+    await env.DB.prepare("INSERT INTO domains (id,name,created_at,cloudflare_enabled,last_synced_at) VALUES ('synced-domain','example.com',?,1,?)")
+      .bind(nowIso(), nowIso()).run();
     const domain = await env.DB.prepare("SELECT id,name FROM domains WHERE name='example.com'").first<{ id: string; name: string }>();
     expect(domain).toMatchObject({ name: "example.com" });
 
     const created = await SELF.fetch("https://admin.example.com/senders", {
       method: "POST", redirect: "manual", headers: { ...authHeaders, Origin: "https://admin.example.com" },
-      body: new URLSearchParams({ domain_id: domain?.id ?? "", email: "news@example.com", name: "News", postal_address: "1 Main Street", return_to: "/senders" }),
+      body: new URLSearchParams({ domain_id: domain?.id ?? "", email: "news@example.com", name: "News", postal_address: "1 Main Street\r\nTokyo", return_to: "/senders" }),
     });
     expect(created.status).toBe(303);
-    const sender = await env.DB.prepare("SELECT s.id,d.name FROM senders s JOIN domains d ON d.id=s.domain_id WHERE s.email='news@example.com'").first<{ id: string; name: string }>();
+    const sender = await env.DB.prepare("SELECT s.id,d.name,s.company_name,s.postal_address FROM senders s JOIN domains d ON d.id=s.domain_id WHERE s.email='news@example.com'").first<{ id: string; name: string; company_name: string; postal_address: string }>();
     expect(sender).toMatchObject({ name: "example.com" });
+    expect(sender?.company_name).toBe("News");
+    expect(sender?.postal_address).toBe("1 Main Street\nTokyo");
     const updatedPageHtml = await (await SELF.fetch("https://admin.example.com/senders", { headers: authHeaders })).text();
     expect(updatedPageHtml).toContain(`data-copy-value="${domain?.id}"`);
     expect(updatedPageHtml).toContain(`data-copy-value="${sender?.id}"`);
-    expect(updatedPageHtml).toContain("Unsubscribe URL ready");
-    expect(updatedPageHtml).toContain("Remove this domain&#39;s senders first");
-
-    const usedDomainDelete = await SELF.fetch(`https://admin.example.com/senders/domains/${domain?.id}/delete`, {
-      method: "POST", redirect: "manual", headers: { ...authHeaders, Origin: "https://admin.example.com" },
-    });
-    expect(usedDomainDelete.status).toBe(409);
-    expect(await env.DB.prepare("SELECT id FROM domains WHERE id=?").bind(domain?.id).first()).toBeTruthy();
-
-    await env.DB.prepare("INSERT INTO domains (id,name,created_at) VALUES ('unused-domain','unused.example',?)").bind(nowIso()).run();
-    const pageWithUnusedDomain = await (await SELF.fetch("https://admin.example.com/senders", { headers: authHeaders })).text();
-    expect(pageWithUnusedDomain).toContain("Unsubscribe URL missing");
-    expect(pageWithUnusedDomain).toContain('action="/senders/domains/unused-domain/delete"');
-    const unusedDomainDelete = await SELF.fetch("https://admin.example.com/senders/domains/unused-domain/delete", {
-      method: "POST", redirect: "manual", headers: { ...authHeaders, Origin: "https://admin.example.com" },
-    });
-    expect(unusedDomainDelete.status).toBe(303);
-    expect(await env.DB.prepare("SELECT id FROM domains WHERE id='unused-domain'").first()).toBeNull();
+    expect(updatedPageHtml).toContain("Company name");
+    expect(updatedPageHtml).toContain("URL ready");
+    expect(updatedPageHtml).toContain("Enabled");
 
     const invalid = await SELF.fetch("https://admin.example.com/senders", {
       method: "POST", headers: { ...authHeaders, Origin: "https://admin.example.com" },
       body: new URLSearchParams({ domain_id: domain?.id ?? "", email: "news@elsewhere.example", name: "News", postal_address: "1 Main Street" }),
     });
     expect(invalid.status).toBe(422);
+
+    const invalidControlCharacter = await SELF.fetch("https://admin.example.com/senders", {
+      method: "POST", headers: { ...authHeaders, Origin: "https://admin.example.com" },
+      body: new URLSearchParams({ domain_id: domain?.id ?? "", email: "control@example.com", name: "Control", postal_address: "1 Main\u0000Street" }),
+    });
+    expect(invalidControlCharacter.status).toBe(422);
+    expect(await invalidControlCharacter.text()).toContain("Postal address contains invalid control characters.");
   });
 
   it("shows an explicit send action when reviewing a draft broadcast", async () => {

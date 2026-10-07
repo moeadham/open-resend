@@ -34,10 +34,12 @@ describe("mail helpers", () => {
       broadcast_status: "queued",
       segment_id: "segment-1",
       sender_email: "news@example.com",
-      sender_name: "Example News",
+      sender_name: "Jane Smith",
+      sender_company_name: "Example Company",
       sender_reply_to: "replies@example.com",
       sender_domain: "example.com",
-      postal_address: "1 Main Street\nTokyo",
+      postal_address: "1 Main Street\r\nTokyo",
+      sender_domain_enabled: 1,
       sender_active: 1,
     };
     const url = "https://api.example.com/unsubscribe/token";
@@ -48,7 +50,12 @@ describe("mail helpers", () => {
     expect(raw).toContain("Reply-To: <replies@example.com>");
     expect(raw).toContain("1 Main Street");
     expect(raw).toContain('role="contentinfo"');
-    expect(raw).toContain("Example News");
+    const fromHeader = raw.split("\r\n").find((line) => line.startsWith("From:"));
+    expect(fromHeader).toContain("<news@example.com>");
+    expect(fromHeader).not.toContain("Example Company");
+    expect(raw).toContain("Example Company");
+    expect(raw).toContain("1 Main Street<br>Tokyo");
+    expect(raw).not.toMatch(/\r(?!\n)/);
     expect(raw).toContain("text-align:center");
     expect(raw).toContain("text-underline-offset:2px");
     expect(raw).not.toContain('<hr>');

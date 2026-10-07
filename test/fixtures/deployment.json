@@ -1,4 +1,5 @@
 {
+  "accountId": "00000000000000000000000000000001",
   "workerName": "cloudflare-resend-test",
   "apiHostname": "mail-api.example.com",
   "unsubscribeHostnames": {
