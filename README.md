@@ -99,7 +99,7 @@ Run the guarded teardown from the same checkout that performed the deployment:
 npm run teardown
 ```
 
-Teardown reads the ignored `.deployment.json` and Terraform state, inventories the exact remote resources, and creates a Terraform destroy plan before deleting anything. By default it asks `y/N` immediately before each deletion: every event subscription, the Worker and custom domains, the Access configuration, every queue, the D1 database, and the local generated deployment state. Pressing Enter keeps that item. Deleting D1 permanently deletes its data.
+Teardown reads the ignored `.deployment.json` and Terraform state, inventories the exact remote resources, and creates a Terraform destroy plan before deleting anything. By default it asks `y/N` immediately before each deletion: every event subscription, the Worker and custom domains, the Access configuration, every queue, the D1 database, and the local generated deployment state. Pressing Enter keeps that item. When the Worker is approved for deletion, teardown first removes its Queue consumer registrations so Cloudflare can delete it. Deleting D1 permanently deletes its data.
 
 To approve every item in the displayed teardown plan without the per-item questions, pass `-y` (or `--yes`):
 

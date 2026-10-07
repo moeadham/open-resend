@@ -78,6 +78,14 @@ async function teardown() {
     env: cloudflareEnv,
     quiet: true,
   }));
+  const workerQueueConsumers = [];
+  for (const queueName of queueNames) {
+    if (!existingQueues.has(queueName)) continue;
+    const consumers = jsonCommand("npx", ["--no-install", "wrangler", "queues", "consumer", "list", queueName, "--json"], { env: cloudflareEnv });
+    if (consumers.some((consumer) => consumer.type === "worker" && consumer.script === deployment.workerName)) {
+      workerQueueConsumers.push(queueName);
+    }
+  }
   const subscriptions = existingQueues.has(deployment.emailEventsQueue)
     ? jsonCommand("npx", ["--no-install", "wrangler", "queues", "subscription", "list", deployment.emailEventsQueue, "--json"], { env: cloudflareEnv })
     : [];
@@ -102,6 +110,7 @@ async function teardown() {
   section("Permanent teardown plan");
   console.log(`Account:              ${account.name} (${account.id})`);
   console.log(`Worker:               ${workerExists ? "delete" : "already absent"} ${deployment.workerName}`);
+  for (const queueName of workerQueueConsumers) console.log(`Queue consumer:       remove ${deployment.workerName} from ${queueName} before Worker deletion`);
   console.log(`Access:               destroy ${accessResources.length} Terraform-managed resource(s) for https://${terraformVars.admin_hostname}`);
   console.log(`Event subscriptions:  delete ${managedSubscriptions.length} Open Resend subscription(s)`);
   for (const name of queueNames) console.log(`Queue:                ${existingQueues.has(name) ? "delete" : "already absent"} ${name}`);
@@ -126,8 +135,17 @@ async function teardown() {
 
   let workerRetained = false;
   if (workerExists) {
-    const label = `Worker ${deployment.workerName} and its custom-domain routes`;
+    const consumerSummary = workerQueueConsumers.length
+      ? `, its custom-domain routes, and ${workerQueueConsumers.length} queue-consumer registration(s)`
+      : " and its custom-domain routes";
+    const label = `Worker ${deployment.workerName}${consumerSummary}`;
     if (await confirmDeletion(label)) {
+      if (workerQueueConsumers.length) {
+        section("Removing Worker queue consumers");
+        for (const queueName of workerQueueConsumers) {
+          command("npx", ["--no-install", "wrangler", "queues", "consumer", "remove", queueName, deployment.workerName], { env: cloudflareEnv });
+        }
+      }
       section("Deleting Worker and its custom domains");
       command("npx", ["--no-install", "wrangler", "delete", deployment.workerName, "--force"], { env: cloudflareEnv });
     } else {
