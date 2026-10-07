@@ -169,6 +169,24 @@ describe("Resend-compatible API", () => {
     const updatedPageHtml = await (await SELF.fetch("https://admin.example.com/senders", { headers: authHeaders })).text();
     expect(updatedPageHtml).toContain(`data-copy-value="${domain?.id}"`);
     expect(updatedPageHtml).toContain(`data-copy-value="${sender?.id}"`);
+    expect(updatedPageHtml).toContain("Unsubscribe URL ready");
+    expect(updatedPageHtml).toContain("Remove this domain&#39;s senders first");
+
+    const usedDomainDelete = await SELF.fetch(`https://admin.example.com/senders/domains/${domain?.id}/delete`, {
+      method: "POST", redirect: "manual", headers: { ...authHeaders, Origin: "https://admin.example.com" },
+    });
+    expect(usedDomainDelete.status).toBe(409);
+    expect(await env.DB.prepare("SELECT id FROM domains WHERE id=?").bind(domain?.id).first()).toBeTruthy();
+
+    await env.DB.prepare("INSERT INTO domains (id,name,created_at) VALUES ('unused-domain','unused.example',?)").bind(nowIso()).run();
+    const pageWithUnusedDomain = await (await SELF.fetch("https://admin.example.com/senders", { headers: authHeaders })).text();
+    expect(pageWithUnusedDomain).toContain("Unsubscribe URL missing");
+    expect(pageWithUnusedDomain).toContain('action="/senders/domains/unused-domain/delete"');
+    const unusedDomainDelete = await SELF.fetch("https://admin.example.com/senders/domains/unused-domain/delete", {
+      method: "POST", redirect: "manual", headers: { ...authHeaders, Origin: "https://admin.example.com" },
+    });
+    expect(unusedDomainDelete.status).toBe(303);
+    expect(await env.DB.prepare("SELECT id FROM domains WHERE id='unused-domain'").first()).toBeNull();
 
     const invalid = await SELF.fetch("https://admin.example.com/senders", {
       method: "POST", headers: { ...authHeaders, Origin: "https://admin.example.com" },
