@@ -1,5 +1,7 @@
 # Open Resend
 
+> **Beta:** This project is under active development. We are looking for contributors to help make it feature-compatible with the official Resend client.
+
 A lightweight, self-hosted mailing-list and campaign service built entirely on Cloudflare. Open Re-send provides a familiar browser interface for managing audiences and broadcasts, plus a focused Resend-compatible API for applications that already use the official Resend SDK.
 
 ## What it includes
