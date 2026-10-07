@@ -1,8 +1,6 @@
-# Open Re-send
+# Open Resend
 
 A lightweight, self-hosted mailing-list and campaign service built entirely on Cloudflare. Open Re-send provides a familiar browser interface for managing audiences and broadcasts, plus a focused Resend-compatible API for applications that already use the official Resend SDK.
-
-It is designed for small lists and straightforward campaigns rather than transactional email or marketing automation.
 
 ## What it includes
 
@@ -168,9 +166,11 @@ After signing into the admin hostname through Access, register each already-onbo
 
 For shared or automated deployments, store Terraform state in a remote backend with locking rather than committing local state. A manually created Access application for the same hostname must be removed before applying this configuration; the project intentionally supports one Terraform-owned installation path rather than migration of dashboard-managed resources.
 
-## Resend SDK
+## Resend SDK compatibility
 
-The supported v1 surface is Segments, Topics, Contacts, contact segment/topic membership, and Broadcasts. Configure the official SDK with this service's base URL:
+Compatibility is tested against the pinned official client, `resend@6.32.0`. Open Re-send is compatible with a focused campaign-management subset; it is not yet a drop-in replacement for every namespace exposed by the Resend client.
+
+Configure the SDK with this service's base URL:
 
 ```ts
 import { Resend } from "resend";
@@ -204,7 +204,45 @@ await resend.broadcasts.create({
 
 API keys use a `re_` prefix, are displayed once, and are stored only as SHA-256 hashes. `Idempotency-Key` is supported on broadcast mutations for 24 hours. Scheduling accepts ISO 8601 timestamps only.
 
-Not implemented in v1: deprecated Audiences, transactional `/emails`, attachments, templates, broadcast duplication, recipient export, open/click tracking, public signup, inbound mail, and automations.
+### Implemented client surface
+
+| Client namespace | Implemented methods |
+| --- | --- |
+| `resend.segments` | `create`, `list`, `get`, `update`, `remove` |
+| `resend.topics` | `create`, `list`, `get`, `update`, `remove` |
+| `resend.contacts` | `create`, `list`, `get`, `update`, `remove` by contact ID or email |
+| `resend.contacts.segments` | `add`, `list`, `remove` |
+| `resend.contacts.topics` | `list`, `update` |
+| `resend.broadcasts` | `create`, `list`, `get`, `update`, `remove`, `send`, `cancel` |
+
+The official client converts its camel-case options to the snake-case API fields used by the Worker. React broadcast content also works when the SDK can render it to HTML before making the request.
+
+### Remaining compatibility work
+
+The following gaps remain within the campaign and audience surface already implemented:
+
+- Add `resend.broadcasts.recipients`, `resend.broadcasts.clickedLinks`, and `resend.broadcasts.duplicate`.
+- Accept multiple `replyTo` addresses. Open Re-send currently accepts exactly one.
+- Accept Resend's relative scheduling expressions such as `in 2 days`. Open Re-send currently requires an ISO 8601 timestamp.
+- Implement cursor pagination for `contacts.segments.list` and `contacts.topics.list`; both currently return the complete result with `has_more: false`.
+- Support deprecated `audienceId` request fields and legacy `/audiences/.../contacts` routes if legacy application compatibility is required. The client's `resend.audiences` alias itself points to the modern Segments client.
+- Remove the Open Re-send-specific requirement that a broadcast's `from` address exactly match an active sender registered in the admin, or document an adapter strategy for applications that construct sender addresses dynamically.
+- Expand official-client contract tests to cover every implemented get, update, remove, pagination, cancellation, scheduling, validation, and error path. The current suite proves the main end-to-end paths but is not yet an exhaustive SDK conformance suite.
+
+The following Resend client namespaces are not implemented and remain outside the v1 scope:
+
+- `resend.apiKeys` — keys are managed only through the protected admin site and are currently full-access.
+- `resend.automations` and automation runs.
+- `resend.batch` and transactional `resend.emails`, including attachments and inbound/receiving email operations.
+- `resend.contactProperties` schema management and `resend.contacts.imports`. Arbitrary contact property values are stored, but property definitions and bulk CSV imports are absent.
+- `resend.domains` and domain claims. Domains are onboarded in Cloudflare Email Sending and then registered manually in the admin.
+- `resend.events`, `resend.logs`, and `resend.usage`.
+- `resend.oauthGrants`.
+- `resend.suppressions`, including batch suppression management. Open Re-send creates suppressions from hard bounces and complaints but does not expose the matching SDK routes.
+- `resend.templates`.
+- `resend.webhooks`, webhook events, replay, and delivery attempts. Cloudflare Email Service event subscriptions are configured outside the Resend-compatible API.
+
+Also outside v1: public signup forms, broadcast recipient export, and open/click tracking.
 
 ## Segments, Topics, and unsubscribe behavior
 
