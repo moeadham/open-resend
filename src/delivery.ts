@@ -1,6 +1,6 @@
 import { EmailMessage } from "cloudflare:email";
 import { createMimeMessage, Mailbox } from "mimetext/browser";
-import { AppError, escapeHtml, logError, nowIso, randomToken, sha256, stripHtml, unsubscribeBaseUrl } from "./lib";
+import { AppError, escapeHtml, logError, normalizeLineEndings, nowIso, randomToken, sha256, stripHtml, unsubscribeBaseUrl } from "./lib";
 import type { BroadcastRow, DeliveryDetail, DeliveryQueueMessage, EmailEventMessage } from "./types";
 
 const TRANSIENT_EMAIL_CODES = new Set([
@@ -171,8 +171,8 @@ export function buildCampaignMime(detail: DeliveryDetail, unsubscribeUrl: string
   const replyTo = broadcastReplyTo(detail.reply_to_json) ?? detail.sender_reply_to;
   if (replyTo) rejectHeaderBreaks(replyTo, "reply-to");
 
-  const htmlFooter = campaignHtmlFooter(detail.sender_name, detail.postal_address, unsubscribeUrl, "Unsubscribe");
-  const textFooter = campaignTextFooter(detail.sender_name, detail.postal_address, unsubscribeUrl, "Unsubscribe");
+  const htmlFooter = campaignHtmlFooter(detail.sender_company_name, detail.postal_address, unsubscribeUrl, "Unsubscribe");
+  const textFooter = campaignTextFooter(detail.sender_company_name, detail.postal_address, unsubscribeUrl, "Unsubscribe");
   const preview = detail.preview_text
     ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0">${escapeHtml(detail.preview_text)}</div>`
     : "";
@@ -189,7 +189,7 @@ export function buildCampaignMime(detail: DeliveryDetail, unsubscribeUrl: string
   mime.setHeader("X-Campaign-ID", detail.broadcast_id);
   mime.addMessage({ contentType: "text/plain", data: text });
   mime.addMessage({ contentType: "text/html", data: html });
-  return mime.asRaw();
+  return normalizeMimeLineEndings(mime.asRaw());
 }
 
 function broadcastReplyTo(value: string | null): string | null {
@@ -227,7 +227,7 @@ async function loadDelivery(db: D1Database, id: string): Promise<DeliveryDetail 
   return db.prepare(
     `SELECT d.*, b.subject, b.html, b.text, b.preview_text, b.reply_to_json,
             b.status AS broadcast_status, b.segment_id, b.topic_id,
-            s.email AS sender_email, s.name AS sender_name, s.reply_to AS sender_reply_to,
+            s.email AS sender_email, s.name AS sender_name, COALESCE(s.company_name, s.name) AS sender_company_name, s.reply_to AS sender_reply_to,
             dom.name AS sender_domain, s.postal_address, s.active AS sender_active
      FROM deliveries d
      JOIN broadcasts b ON b.id = d.broadcast_id
@@ -302,7 +302,7 @@ export async function processDeadLetter(batch: MessageBatch<DeliveryQueueMessage
 
 export async function sendTestEmail(
   env: Env,
-  input: { to: string; sender: { email: string; name: string; reply_to: string | null; postal_address: string; domain: string }; subject: string; html: string; text?: string | null },
+  input: { to: string; sender: { email: string; name: string; company_name: string | null; reply_to: string | null; postal_address: string; domain: string }; subject: string; html: string; text?: string | null },
 ): Promise<string> {
   const unsubscribeUrl = `${unsubscribeBaseUrl(env.UNSUBSCRIBE_HOSTNAMES, input.sender.domain)}/unsubscribe/test`;
   const mime = createMimeMessage();
@@ -313,23 +313,27 @@ export async function sendTestEmail(
   mime.setHeader("X-Campaign-Test", "true");
   mime.addMessage({
     contentType: "text/plain",
-    data: `${input.text ?? stripHtml(input.html)}${campaignTextFooter(input.sender.name, input.sender.postal_address, unsubscribeUrl, "Unsubscribe preview")}`,
+    data: `${input.text ?? stripHtml(input.html)}${campaignTextFooter(input.sender.company_name ?? input.sender.name, input.sender.postal_address, unsubscribeUrl, "Unsubscribe preview")}`,
   });
   mime.addMessage({
     contentType: "text/html",
-    data: `${input.html}${campaignHtmlFooter(input.sender.name, input.sender.postal_address, unsubscribeUrl, "Unsubscribe preview")}`,
+    data: `${input.html}${campaignHtmlFooter(input.sender.company_name ?? input.sender.name, input.sender.postal_address, unsubscribeUrl, "Unsubscribe preview")}`,
   });
-  const result = await env.EMAIL.send(new EmailMessage(input.sender.email, input.to, mime.asRaw()));
+  const result = await env.EMAIL.send(new EmailMessage(input.sender.email, input.to, normalizeMimeLineEndings(mime.asRaw())));
   return result.messageId;
 }
 
-function campaignHtmlFooter(senderName: string, postalAddress: string, unsubscribeUrl: string, linkLabel: string): string {
-  const postal = escapeHtml(postalAddress).replaceAll("\n", "<br>");
-  return `<div role="contentinfo" style="box-sizing:border-box;max-width:600px;margin:40px auto 0;padding:24px 16px 8px;border-top:1px solid #e5e7eb;text-align:center;color:#6b7280;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:12px;line-height:1.6"><p style="margin:0 0 4px;padding:0;color:#4b5563;font-weight:600">${escapeHtml(senderName)}</p><p style="margin:0 0 12px;padding:0">${postal}</p><p style="margin:0;padding:0"><a href="${escapeHtml(unsubscribeUrl)}" rel="noopener noreferrer nofollow" target="_blank" style="color:#0670db;text-decoration:underline;text-underline-offset:2px">${escapeHtml(linkLabel)}</a></p></div>`;
+function campaignHtmlFooter(companyName: string, postalAddress: string, unsubscribeUrl: string, linkLabel: string): string {
+  const postal = escapeHtml(normalizeLineEndings(postalAddress)).replaceAll("\n", "<br>");
+  return `<div role="contentinfo" style="box-sizing:border-box;max-width:600px;margin:40px auto 0;padding:24px 16px 8px;border-top:1px solid #e5e7eb;text-align:center;color:#6b7280;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:12px;line-height:1.6"><p style="margin:0 0 4px;padding:0;color:#4b5563;font-weight:600">${escapeHtml(companyName)}</p><p style="margin:0 0 12px;padding:0">${postal}</p><p style="margin:0;padding:0"><a href="${escapeHtml(unsubscribeUrl)}" rel="noopener noreferrer nofollow" target="_blank" style="color:#0670db;text-decoration:underline;text-underline-offset:2px">${escapeHtml(linkLabel)}</a></p></div>`;
 }
 
-function campaignTextFooter(senderName: string, postalAddress: string, unsubscribeUrl: string, linkLabel: string): string {
-  return `\n\n—\n${senderName}\n${postalAddress}\n${linkLabel}: ${unsubscribeUrl}`;
+function campaignTextFooter(companyName: string, postalAddress: string, unsubscribeUrl: string, linkLabel: string): string {
+  return `\n\n—\n${companyName}\n${normalizeLineEndings(postalAddress)}\n${linkLabel}: ${unsubscribeUrl}`;
+}
+
+function normalizeMimeLineEndings(raw: string): string {
+  return raw.replace(/\r\n?|\n/g, "\r\n");
 }
 
 export async function retryFailedDeliveries(env: Env, broadcastId: string): Promise<number> {

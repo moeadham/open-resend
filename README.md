@@ -20,7 +20,7 @@ A lightweight, self-hosted mailing-list and campaign service built entirely on C
 ## Typical workflow
 
 1. Enable a domain in Cloudflare Email Sending, then register it in **Domains**.
-2. Add one or more sender identities. Every sender requires a physical postal address.
+2. Add one or more sender identities. Every sender requires a physical postal address and can include a company name for the compliance footer; when omitted, the sender name is used.
 3. Create a segment and add contacts to it. A contact must be an active member of the selected segment to receive a broadcast.
 4. Optionally create a Topic when recipients should be able to unsubscribe from one category without leaving every mailing.
 5. Create a broadcast, choose a sender and segment, write the message, and save it for review.
