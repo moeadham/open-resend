@@ -214,6 +214,17 @@
 .info-dot { @apply ml-1 inline-grid size-4 place-items-center rounded-full border border-border-strong text-[10px] text-foreground-soft; }
 .modal-actions { @apply mt-6 flex flex-row-reverse justify-end gap-2; }
 .modal-actions kbd { @apply ml-0.5 inline-grid min-w-5 place-items-center rounded bg-foreground/8 px-1 py-0.5 font-mono text-[10px] text-foreground-soft; }
+.api-key-created { @apply -mt-1; }
+.one-time-warning { @apply flex items-center gap-2.5 rounded-xl border border-sky-500/35 bg-sky-500/10 px-3.5 py-3 text-sm text-sky-200; }
+.one-time-warning svg { @apply shrink-0 text-sky-400; }
+.secret-field { @apply flex items-center rounded-xl border border-border-strong bg-background-subtle px-1.5 transition focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/20; }
+.secret-field input { @apply min-w-0 flex-1 border-0 bg-transparent font-mono tracking-wide shadow-none focus-visible:ring-0; }
+.secret-field .icon-button { @apply size-8 min-h-8 shrink-0 p-0; }
+.secret-field button[data-copied="true"] { @apply text-success; }
+.secret-hide-icon { @apply hidden; }
+[data-secret-toggle][aria-pressed="true"] .secret-show-icon { @apply hidden; }
+[data-secret-toggle][aria-pressed="true"] .secret-hide-icon { @apply block; }
+.api-key-created-actions { @apply mt-6 flex justify-start; }
 .modal[open] { animation: modal-in .16s ease-out; }
 @keyframes modal-in { from { opacity: 0; transform: translateY(8px) scale(.985); } }
 

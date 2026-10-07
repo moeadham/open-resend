@@ -113,6 +113,32 @@ describe("Resend-compatible API", () => {
     expect((await env.DB.prepare("SELECT subscription FROM contact_topics WHERE contact_id='contact-admin' AND topic_id='topic-admin'").first<{ subscription: string }>())?.subscription).toBe("opt_out");
   });
 
+  it("shows a newly created API key once in a copyable, masked dialog", async () => {
+    const token = await accessToken("replace-with-access-application-aud", "5 minutes");
+    const response = await SELF.fetch("https://admin.example.com/api-keys", {
+      method: "POST",
+      headers: { "Cf-Access-Jwt-Assertion": token, Origin: "https://admin.example.com" },
+      body: new URLSearchParams({ name: "UI key" }),
+    });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("View API Key");
+    expect(html).toContain("You can only see this key once.");
+    expect(html).toContain('data-auto-open="true"');
+    expect(html).toContain('type="password"');
+    expect(html).toContain("data-secret-toggle");
+    expect(html).toContain('data-copy-target="created-api-key"');
+    expect(html).toContain('aria-label="Copy API key"');
+    const raw = html.match(/value="(re_[^"]+)" data-secret-key/)?.[1];
+    expect(raw).toBeTruthy();
+    const stored = await env.DB.prepare("SELECT prefix,key_hash FROM api_keys WHERE name='UI key'").first<{ prefix: string; key_hash: string }>();
+    expect(stored?.prefix).toBe(raw?.slice(0, 12));
+    expect(stored?.key_hash).toBe(await sha256(raw ?? ""));
+
+    const nextVisit = await SELF.fetch("https://admin.example.com/api-keys", { headers: { "Cf-Access-Jwt-Assertion": token } });
+    expect(await nextVisit.text()).not.toContain(raw);
+  });
+
   it("registers sending domains before creating senders", async () => {
     const token = await accessToken("replace-with-access-application-aud", "5 minutes");
     const authHeaders = { "Cf-Access-Jwt-Assertion": token };

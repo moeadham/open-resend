@@ -24,9 +24,10 @@ for (const form of document.querySelectorAll<HTMLFormElement>("form[data-confirm
   });
 }
 
-for (const button of document.querySelectorAll<HTMLButtonElement>("[data-copy-value]")) {
+for (const button of document.querySelectorAll<HTMLButtonElement>("[data-copy-value], [data-copy-target]")) {
   button.addEventListener("click", async () => {
-    const value = button.dataset.copyValue;
+    const target = button.dataset.copyTarget ? document.getElementById(button.dataset.copyTarget) : null;
+    const value = button.dataset.copyValue ?? (target instanceof HTMLInputElement ? target.value : "");
     if (!value) return;
     try {
       await navigator.clipboard.writeText(value);
@@ -42,14 +43,26 @@ for (const button of document.querySelectorAll<HTMLButtonElement>("[data-copy-va
       textarea.remove();
     }
     const label = button.querySelector<HTMLElement>("[data-copy-text]");
+    const originalLabel = label?.textContent ?? "";
     if (label) label.textContent = "Copied";
     button.dataset.copied = "true";
     const menu = button.closest<HTMLElement>("[data-action-menu]");
     if (menu && "hidePopover" in menu) menu.hidePopover();
     window.setTimeout(() => {
-      if (label) label.textContent = "Copy ID";
+      if (label) label.textContent = originalLabel;
       delete button.dataset.copied;
     }, 1600);
+  });
+}
+
+for (const button of document.querySelectorAll<HTMLButtonElement>("[data-secret-toggle]")) {
+  button.addEventListener("click", () => {
+    const field = button.closest<HTMLElement>("[data-secret-field]")?.querySelector<HTMLInputElement>("[data-secret-key]");
+    if (!field) return;
+    const reveal = field.type === "password";
+    field.type = reveal ? "text" : "password";
+    button.setAttribute("aria-pressed", String(reveal));
+    button.setAttribute("aria-label", reveal ? "Hide API key" : "Show API key");
   });
 }
 
