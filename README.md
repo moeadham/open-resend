@@ -81,13 +81,13 @@ The guided deploy performs a complete preflight before it changes Cloudflare res
 - verifies the active Wrangler account;
 - asks for the admin, API, sending-domain, and per-domain unsubscribe hostnames;
 - checks that every sending domain is already enabled in Cloudflare Email Sending without modifying domain onboarding;
-- opens Cloudflare's official prefilled API-token template for the selected account and requests its one-time value through hidden input when `CLOUDFLARE_API_TOKEN` is not already set;
+- loads the Terraform API token from `CLOUDFLARE_API_TOKEN` or the local `.open-resend.secrets.json`, opening Cloudflare's official prefilled token template only when neither contains a token for the selected account;
 - validates the token, Zero Trust organization, identity provider, application tests, and Terraform plan;
 - inventories D1 and Queues and displays the exact create/reuse plan;
 - waits for the user to type `DEPLOY` before making any Cloudflare changes;
 - creates missing D1 and Queue resources, applies Access, migrates D1, deploys the Worker and custom domains, creates missing Email Sending event subscriptions, and verifies the public endpoints.
 
-The template supplies the exact Access permissions and account restriction, so the deployer only reviews it, creates the token, and pastes the one-time value. The token is never written to disk or printed. On macOS, install the supported Terraform-compatible runner once with `brew install opentofu`. On other platforms, install OpenTofu or Terraform and ensure `tofu` or `terraform` is on `PATH`.
+The template supplies the exact Access permissions and account restriction, so the deployer only reviews it, creates the token, and pastes the one-time value. After validation, the script stores prompted tokens by account ID in the git-ignored `.open-resend.secrets.json` with owner-only permissions (`0600`) and reuses them for later deploy and teardown runs. `CLOUDFLARE_API_TOKEN` takes precedence and is not persisted. The token is never printed. Delete `.open-resend.secrets.json` to forget all saved tokens, or revoke a token in Cloudflare. On macOS, install the supported Terraform-compatible runner once with `brew install opentofu`. On other platforms, install OpenTofu or Terraform and ensure `tofu` or `terraform` is on `PATH`.
 
 The manual procedure below remains available for debugging and infrastructure review.
 
@@ -109,7 +109,7 @@ npm run teardown -- -y
 
 If the Worker is kept, teardown also keeps its Access protection, bound queues, D1 database, and local deployment state. If any remote item is kept, the local state is preserved so a later teardown can safely finish the job.
 
-Teardown never disables Cloudflare Email Sending and never removes its onboarded sending domains. It also refuses to guess ownership when `.deployment.json` or Terraform state is missing.
+Teardown never disables Cloudflare Email Sending, never removes its onboarded sending domains, and keeps `.open-resend.secrets.json` for future deployments. It also refuses to guess ownership when `.deployment.json` or Terraform state is missing.
 
 Before the first deployment, activate a Zero Trust plan for the Cloudflare account and configure Cloudflare as its account-member identity provider. New Zero Trust organizations include this identity provider by default. Terraform requires exactly one Cloudflare identity provider, restricts the application to it, and redirects authentication directly to it. The default policy admits members of the deploying Cloudflare account; set `allowed_account_id` to authorize members of a different account.
 

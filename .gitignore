@@ -2,6 +2,7 @@ node_modules/
 .wrangler/
 .dev.vars
 .env
+.open-resend.secrets.json
 dist/
 dist-assets/
 coverage/

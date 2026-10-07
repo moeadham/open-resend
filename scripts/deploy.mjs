@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +7,7 @@ import { createInterface } from "node:readline/promises";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const deploymentPath = resolve(root, ".deployment.json");
+const secretsPath = resolve(root, ".open-resend.secrets.json");
 const terraformVarsPath = resolve(root, "infra/access/terraform.tfvars");
 const tokenPermissions = [
   { key: "access", type: "edit" },
@@ -97,8 +98,7 @@ async function teardown() {
   );
   const workerExists = remoteWorkerExists(deployment.workerName, account.id);
 
-  const token = process.env.CLOUDFLARE_API_TOKEN || await requestTerraformToken(account);
-  await verifyToken(token);
+  const token = await getTerraformToken(account);
   const terraformEnv = { ...process.env, CLOUDFLARE_API_TOKEN: token };
   command(terraform, ["-chdir=infra/access", "init"], { env: terraformEnv });
   const accessResources = command(terraform, ["-chdir=infra/access", "state", "list"], { env: terraformEnv, quiet: true })
@@ -294,8 +294,7 @@ async function main() {
   command("npm", ["test"]);
   console.log("✓ Application checks and tests passed");
 
-  const token = process.env.CLOUDFLARE_API_TOKEN || await requestTerraformToken(account);
-  await verifyToken(token);
+  const token = await getTerraformToken(account);
   console.log("✓ Cloudflare API token is active");
 
   writeFileSync(terraformVarsPath, terraformVars({ accountId: account.id, adminHostname }), { mode: 0o600 });
@@ -451,6 +450,39 @@ async function requestTerraformToken(account) {
   console.log(`If the browser does not open, use:\n${tokenUrl}\n`);
   openUrl(tokenUrl);
   return secretQuestion("Paste the token (input is hidden): ");
+}
+
+async function getTerraformToken(account) {
+  const environmentToken = process.env.CLOUDFLARE_API_TOKEN;
+  if (environmentToken) {
+    await verifyToken(environmentToken);
+    console.log("✓ Using Cloudflare API token from CLOUDFLARE_API_TOKEN");
+    return environmentToken;
+  }
+
+  const secrets = readJsonIfPresent(secretsPath) ?? {};
+  const savedToken = secrets.cloudflareApiTokens?.[account.id];
+  if (typeof savedToken === "string" && savedToken) {
+    try {
+      await verifyToken(savedToken);
+      console.log(`✓ Using saved Cloudflare API token from ${secretsPath}`);
+      return savedToken;
+    } catch (error) {
+      if (error.message !== "The Cloudflare API token is invalid or inactive.") throw error;
+      console.log(`The saved Cloudflare API token for ${account.name} is no longer active. A replacement is required.`);
+    }
+  }
+
+  const token = await requestTerraformToken(account);
+  await verifyToken(token);
+  const cloudflareApiTokens = {
+    ...(secrets.cloudflareApiTokens ?? {}),
+    [account.id]: token,
+  };
+  writeFileSync(secretsPath, `${JSON.stringify({ ...secrets, cloudflareApiTokens }, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(secretsPath, 0o600);
+  console.log(`✓ Saved Cloudflare API token to ${secretsPath} (mode 0600)`);
+  return token;
 }
 
 function apiTokenTemplateUrl(accountId) {
