@@ -157,7 +157,9 @@ describe("Resend-compatible API", () => {
     expect(html).toContain("1 eligible recipient");
     expect(html).toContain("Unsubscribe handled automatically");
     expect(html).toContain("Schedule broadcast");
-    expect(html).toContain("Choose a date and time");
+    expect(html).toContain("Pick a suggested time or choose an exact date below.");
+    expect(html).toContain("Tomorrow morning");
+    expect(html).toContain("data-date-picker");
     expect(html).toContain("Send yourself a preview");
     expect(html).toContain('id="send-broadcast"');
     expect(html).not.toContain("Retry failures");

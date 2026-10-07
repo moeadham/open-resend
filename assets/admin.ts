@@ -1,5 +1,5 @@
 import Quill from "quill";
-import flatpickr from "flatpickr";
+import { datePicker } from "@kiwa-ui/enhance/date-picker";
 
 const editor = document.querySelector<HTMLElement>("[data-rich-editor]");
 const input = document.querySelector<HTMLTextAreaElement>("#html-input");
@@ -23,26 +23,73 @@ for (const form of document.querySelectorAll<HTMLFormElement>("form[data-confirm
   });
 }
 
+datePicker();
+
 for (const form of document.querySelectorAll<HTMLFormElement>("form[data-schedule-form]")) {
-  const local = form.querySelector<HTMLInputElement>("[data-schedule-local]");
-  if (local) {
-    const earliest = new Date(Date.now() + 5 * 60 * 1000);
-    const uses24HourTime = Intl.DateTimeFormat(undefined, { hour: "numeric" }).resolvedOptions().hour12 === false;
-    flatpickr(local, {
-      altInput: true,
-      altFormat: uses24HourTime ? "F j, Y at H:i" : "F j, Y at h:i K",
-      dateFormat: "Y-m-d\\TH:i",
-      enableTime: true,
-      minDate: earliest,
-      minuteIncrement: 5,
-      time_24hr: uses24HourTime,
-    });
-  }
+  const dateInput = form.querySelector<HTMLInputElement>("[data-schedule-date]");
+  const timeInput = form.querySelector<HTMLSelectElement>("[data-schedule-time]");
+  const summary = form.querySelector<HTMLElement>("[data-schedule-summary]");
+  const error = form.querySelector<HTMLElement>("[data-schedule-error]");
+  const picker = form.querySelector<HTMLElement>("[data-date-picker]");
   const timezoneLabel = form.querySelector<HTMLElement>("[data-timezone-label]");
   if (timezoneLabel) timezoneLabel.textContent = `Times shown in ${Intl.DateTimeFormat().resolvedOptions().timeZone}`;
-  form.addEventListener("submit", () => {
+
+  const updateSummary = (): void => {
+    if (!summary || !dateInput?.value || !timeInput?.value) return;
+    const selected = new Date(`${dateInput.value}T${timeInput.value}:00`);
+    summary.textContent = selected.toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    if (error) error.textContent = "";
+  };
+
+  const selectDate = (target: Date): void => {
+    if (!picker) return;
+    const targetMonth = target.getFullYear() * 12 + target.getMonth();
+    const currentMonth = Number(picker.dataset.datePickerYear) * 12 + Number(picker.dataset.datePickerMonth);
+    const direction = targetMonth >= currentMonth ? "[data-date-picker-next]" : "[data-date-picker-prev]";
+    for (let step = 0; step < Math.abs(targetMonth - currentMonth); step += 1) picker.querySelector<HTMLButtonElement>(direction)?.click();
+    const value = `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, "0")}-${String(target.getDate()).padStart(2, "0")}`;
+    picker.querySelector<HTMLButtonElement>(`[data-date-picker-day="${value}"]`)?.click();
+  };
+
+  for (const preset of form.querySelectorAll<HTMLButtonElement>("[data-schedule-preset]")) {
+    preset.addEventListener("click", () => {
+      const target = new Date();
+      target.setSeconds(0, 0);
+      if (preset.dataset.schedulePreset === "next-monday") {
+        const daysUntilMonday = ((8 - target.getDay()) % 7) || 7;
+        target.setDate(target.getDate() + daysUntilMonday);
+        if (timeInput) timeInput.value = "09:00";
+      } else {
+        target.setDate(target.getDate() + 1);
+        if (timeInput) timeInput.value = preset.dataset.schedulePreset === "tomorrow-afternoon" ? "15:00" : "09:00";
+      }
+      selectDate(target);
+      updateSummary();
+      for (const item of form.querySelectorAll("[data-schedule-preset]")) item.removeAttribute("data-active");
+      preset.dataset.active = "true";
+    });
+  }
+
+  picker?.addEventListener("date-change", () => {
+    for (const item of form.querySelectorAll("[data-schedule-preset]")) item.removeAttribute("data-active");
+    updateSummary();
+  });
+  timeInput?.addEventListener("change", updateSummary);
+
+  form.addEventListener("submit", (event) => {
     const iso = form.querySelector<HTMLInputElement>("[name=scheduled_at]");
-    if (local?.value && iso) iso.value = new Date(local.value).toISOString();
+    if (!dateInput?.value || !timeInput?.value || !iso) {
+      event.preventDefault();
+      if (error) error.textContent = "Choose a date before scheduling.";
+      return;
+    }
+    const selected = new Date(`${dateInput.value}T${timeInput.value}:00`);
+    if (selected.getTime() < Date.now() + 5 * 60 * 1000) {
+      event.preventDefault();
+      if (error) error.textContent = "Choose a time at least five minutes from now.";
+      return;
+    }
+    iso.value = selected.toISOString();
   });
 }
 
@@ -67,7 +114,7 @@ function openDialog(id: string): void {
   const dialog = document.getElementById(id);
   if (!(dialog instanceof HTMLDialogElement)) return;
   dialog.showModal();
-  const firstField = dialog.querySelector<HTMLElement>("input:not(:disabled), textarea:not(:disabled), select:not(:disabled)");
+  const firstField = dialog.querySelector<HTMLElement>("input:not([type=hidden]):not(:disabled), textarea:not(:disabled), select:not(:disabled), button:not(:disabled)");
   firstField?.focus();
 }
 

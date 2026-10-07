@@ -18,7 +18,7 @@
     "deploy": "npm run config:deploy && wrangler deploy --config wrangler.deploy.jsonc"
   },
   "dependencies": {
-    "flatpickr": "^4.6.13",
+    "@kiwa-ui/enhance": "^2.1.0",
     "hono": "^4.13.13",
     "jose": "^6.2.12",
     "mimetext": "^3.0.28",
