@@ -22,14 +22,122 @@ const emailEvents = [
 ];
 
 let temporaryDirectory;
+const operationName = process.argv.includes("--teardown") ? "Teardown" : "Deployment";
 
 try {
-  await main();
+  if (process.argv.includes("--teardown")) await teardown();
+  else await main();
 } catch (error) {
-  console.error(`\nDeployment stopped: ${error.message}`);
+  console.error(`\n${operationName} stopped: ${error.message}`);
   process.exitCode = 1;
 } finally {
   if (temporaryDirectory) rmSync(temporaryDirectory, { recursive: true, force: true });
+}
+
+async function teardown() {
+  heading("Open Resend teardown preflight");
+  console.log("This removes only the resources recorded for this installation. Email Sending and its onboarded domains are never disabled.\n");
+
+  requireCommand("node", ["--version"]);
+  requireCommand("npm", ["--version"]);
+  requireCommand("npx", ["--no-install", "wrangler", "--version"]);
+  const terraform = findTerraform();
+
+  const deployment = readJsonIfPresent(deploymentPath);
+  if (!deployment) fail(`No ${deploymentPath} exists, so teardown cannot safely identify this installation.`);
+  const terraformVars = readTerraformVars(terraformVarsPath);
+  if (!terraformVars.account_id || !terraformVars.admin_hostname) {
+    fail(`Missing account_id or admin_hostname in ${terraformVarsPath}.`);
+  }
+  const terraformStatePath = resolve(root, "infra/access/terraform.tfstate");
+  if (!existsSync(terraformStatePath)) {
+    fail("Terraform state is missing. Refusing to guess which Cloudflare Access resources belong to this installation.");
+  }
+
+  const identity = jsonCommand("npx", ["--no-install", "wrangler", "whoami", "--json"]);
+  if (!identity.loggedIn || !identity.accounts?.length) {
+    fail("Wrangler is not logged in. Run `npx wrangler login`, then rerun this command.");
+  }
+  const account = identity.accounts.find(({ id }) => id === terraformVars.account_id);
+  if (!account) fail(`Wrangler is not logged into the deployment account ${terraformVars.account_id}.`);
+  const cloudflareEnv = accountEnv(account.id);
+
+  section("Inventorying recorded resources");
+  const databases = jsonCommand("npx", ["--no-install", "wrangler", "d1", "list", "--json"], { env: cloudflareEnv });
+  const database = databases.find(({ uuid }) => uuid === deployment.d1DatabaseId);
+  if (database && database.name !== deployment.d1DatabaseName) {
+    fail(`D1 ${deployment.d1DatabaseId} is now named ${database.name}; expected ${deployment.d1DatabaseName}.`);
+  }
+
+  const queueNames = [deployment.deliveryQueue, deployment.deadLetterQueue, deployment.emailEventsQueue];
+  const existingQueues = parseQueueNames(command("npx", ["--no-install", "wrangler", "queues", "list"], {
+    env: cloudflareEnv,
+    quiet: true,
+  }));
+  const subscriptions = existingQueues.has(deployment.emailEventsQueue)
+    ? jsonCommand("npx", ["--no-install", "wrangler", "queues", "subscription", "list", deployment.emailEventsQueue, "--json"], { env: cloudflareEnv })
+    : [];
+  const sendingDomains = Object.keys(deployment.unsubscribeHostnames ?? {});
+  const managedSubscriptions = subscriptions.filter((subscription) =>
+    subscription.source?.type === "email.sending"
+    && sendingDomains.includes(subscription.source?.domain)
+    && subscription.name === `Open Resend — ${subscription.source.domain}`
+  );
+  const workerExists = remoteWorkerExists(deployment.workerName, account.id);
+
+  const token = process.env.CLOUDFLARE_API_TOKEN || await requestTerraformToken(account);
+  await verifyToken(token);
+  const terraformEnv = { ...process.env, CLOUDFLARE_API_TOKEN: token };
+  command(terraform, ["-chdir=infra/access", "init"], { env: terraformEnv });
+  const accessResources = command(terraform, ["-chdir=infra/access", "state", "list"], { env: terraformEnv, quiet: true })
+    .split("\n").map((line) => line.trim()).filter(Boolean);
+  temporaryDirectory = mkdtempSync(resolve(tmpdir(), "open-resend-teardown-"));
+  const planPath = resolve(temporaryDirectory, "access-destroy.tfplan");
+  command(terraform, ["-chdir=infra/access", "plan", "-destroy", `-out=${planPath}`], { env: terraformEnv });
+
+  section("Permanent teardown plan");
+  console.log(`Account:              ${account.name} (${account.id})`);
+  console.log(`Worker:               ${workerExists ? "delete" : "already absent"} ${deployment.workerName}`);
+  console.log(`Access:               destroy ${accessResources.length} Terraform-managed resource(s) for https://${terraformVars.admin_hostname}`);
+  console.log(`Event subscriptions:  delete ${managedSubscriptions.length} Open Resend subscription(s)`);
+  for (const name of queueNames) console.log(`Queue:                ${existingQueues.has(name) ? "delete" : "already absent"} ${name}`);
+  console.log(`D1 and all its data:  ${database ? "DELETE PERMANENTLY" : "already absent"} ${deployment.d1DatabaseName} (${deployment.d1DatabaseId})`);
+  for (const domain of sendingDomains) console.log(`Email Sending:        KEEP ENABLED ${domain}`);
+
+  const confirmationText = `TEAR DOWN ${deployment.workerName}`;
+  const confirmation = await ask(`Type ${confirmationText} to continue`, "");
+  if (confirmation !== confirmationText) fail("Confirmation did not match; no resources were deleted.");
+
+  section("Deleting Email Sending event subscriptions");
+  for (const subscription of managedSubscriptions) {
+    command("npx", ["--no-install", "wrangler", "queues", "subscription", "delete", deployment.emailEventsQueue, "--id", subscription.id, "--force"], { env: cloudflareEnv });
+  }
+
+  if (workerExists) {
+    section("Deleting Worker and its custom domains");
+    command("npx", ["--no-install", "wrangler", "delete", deployment.workerName, "--force"], { env: cloudflareEnv });
+  }
+
+  section("Destroying Cloudflare Access application and policy");
+  command(terraform, ["-chdir=infra/access", "apply", "-auto-approve", planPath], { env: terraformEnv });
+
+  section("Deleting queues");
+  for (const name of queueNames) {
+    if (existingQueues.has(name)) command("npx", ["--no-install", "wrangler", "queues", "delete", name], { env: { ...cloudflareEnv, CI: "true" } });
+  }
+
+  if (database) {
+    section("Deleting D1 database and all data");
+    command("npx", ["--no-install", "wrangler", "d1", "delete", deployment.d1DatabaseId, "--skip-confirmation"], { env: cloudflareEnv });
+  }
+
+  for (const path of [deploymentPath, resolve(root, "wrangler.deploy.jsonc"), terraformVarsPath, terraformStatePath, `${terraformStatePath}.backup`]) {
+    rmSync(path, { force: true });
+  }
+
+  heading("Teardown complete");
+  console.log("The Worker, Access configuration, event subscriptions, queues, and D1 database were removed.");
+  console.log(`Email Sending remains enabled for: ${sendingDomains.join(", ")}`);
 }
 
 async function main() {
@@ -326,6 +434,19 @@ function createDatabase(name, accountId) {
   const database = databases.find((item) => item.name === name);
   if (!database) fail(`D1 ${name} was created but could not be found afterward.`);
   return database;
+}
+
+function remoteWorkerExists(name, accountId) {
+  const result = spawnSync("npx", ["--no-install", "wrangler", "deployments", "list", "--name", name], {
+    cwd: root,
+    env: accountEnv(accountId),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const output = stripAnsi(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
+  if (result.status === 0) return true;
+  if (output.includes("does not exist on your account") || output.includes("code: 10007")) return false;
+  fail(`Could not determine whether Worker ${name} exists.`);
 }
 
 function resolveEmailSendingZoneId(domain, accountId) {

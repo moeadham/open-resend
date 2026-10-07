@@ -15,6 +15,7 @@
     "predeploy:dry": "npm run check",
     "deploy:dry": "npm run config:deploy && wrangler deploy --config wrangler.deploy.jsonc --dry-run",
     "deploy": "node scripts/deploy.mjs",
+    "teardown": "node scripts/deploy.mjs --teardown",
     "deploy:worker": "npm run config:deploy && wrangler deploy --config wrangler.deploy.jsonc"
   },
   "dependencies": {

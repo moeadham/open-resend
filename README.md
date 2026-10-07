@@ -91,6 +91,18 @@ The template supplies the exact Access permissions and account restriction, so t
 
 The manual procedure below remains available for debugging and infrastructure review.
 
+### Tear down an installation
+
+Run the guarded teardown from the same checkout that performed the deployment:
+
+```bash
+npm run teardown
+```
+
+Teardown reads the ignored `.deployment.json` and Terraform state, inventories the exact remote resources, creates a Terraform destroy plan, and requires the phrase `TEAR DOWN <worker-name>` before deleting anything. It removes the Worker and custom domains, Cloudflare Access application and policy, Open Resend event subscriptions, queues, D1 database, and local generated deployment state. Deleting D1 permanently deletes its data.
+
+Teardown never disables Cloudflare Email Sending and never removes its onboarded sending domains. It also refuses to guess ownership when `.deployment.json` or Terraform state is missing.
+
 Before the first deployment, activate a Zero Trust plan for the Cloudflare account and configure Cloudflare as its account-member identity provider. New Zero Trust organizations include this identity provider by default. Terraform requires exactly one Cloudflare identity provider, restricts the application to it, and redirects authentication directly to it. The default policy admits members of the deploying Cloudflare account; set `allowed_account_id` to authorize members of a different account.
 
 ### Create the Terraform API token
