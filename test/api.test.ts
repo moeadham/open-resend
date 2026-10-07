@@ -110,6 +110,8 @@ describe("Resend-compatible API", () => {
     const html = await page.text();
     expect(html).toContain("Add domain");
     expect(html).toContain("Add sender");
+    expect(html).toContain("Domains must be enabled in Cloudflare Email Sending");
+    expect(html).toContain("https://dash.cloudflare.com/?to=/:account/email-service/sending");
 
     const registered = await SELF.fetch("https://admin.example.com/senders/domains", {
       method: "POST", redirect: "manual", headers: { ...authHeaders, Origin: "https://admin.example.com" },
