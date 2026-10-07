@@ -85,7 +85,7 @@ The guided deploy performs a complete preflight before it changes Cloudflare res
 - validates the token, Zero Trust organization, identity provider, application tests, and Terraform plan;
 - inventories D1 and Queues and displays the exact create/reuse plan;
 - waits for the user to type `DEPLOY` before making any Cloudflare changes;
-- creates missing D1 and Queue resources, applies Access, migrates D1, deploys the Worker and custom domains, creates missing Email Sending event subscriptions, and verifies the public endpoints.
+- creates missing D1 and Queue resources, applies Access, migrates D1, deploys the Worker and custom domains, creates missing Email Sending event subscriptions, and verifies the public endpoints with retries for DNS and TLS propagation. If verification is still pending, the script reports a non-fatal warning because the Cloudflare deployment itself is already complete.
 
 The template supplies the exact Access permissions and account restriction, so the deployer only reviews it, creates the token, and pastes the one-time value. After validation, the script stores prompted tokens by account ID in the git-ignored `.open-resend.secrets.json` with owner-only permissions (`0600`) and reuses them for later deploy and teardown runs. `CLOUDFLARE_API_TOKEN` takes precedence and is not persisted. The token is never printed. Delete `.open-resend.secrets.json` to forget all saved tokens, or revoke a token in Cloudflare. On macOS, install the supported Terraform-compatible runner once with `brew install opentofu`. On other platforms, install OpenTofu or Terraform and ensure `tofu` or `terraform` is on `PATH`.
 

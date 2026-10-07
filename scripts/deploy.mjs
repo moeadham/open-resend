@@ -357,11 +357,16 @@ async function main() {
   await ensureEmailEventSubscriptions({ accountId: account.id, domains: sendingDomains, enabledDomains, queue: queueNames.emailEvents });
 
   section("Verifying endpoints");
-  await verifyEndpoints({ adminHostname, apiHostname, unsubscribeHostnames });
+  const verificationWarnings = await verifyEndpoints({ adminHostname, apiHostname, unsubscribeHostnames });
 
-  heading("Deployment complete");
+  heading(verificationWarnings.length ? "Deployment complete — endpoint verification pending" : "Deployment complete");
   console.log(`Admin: https://${adminHostname}`);
   console.log(`API:   https://${apiHostname}`);
+  if (verificationWarnings.length) {
+    console.log("\nCloudflare accepted and deployed every resource, but these endpoint checks did not pass before the verification window ended:");
+    for (const warning of verificationWarnings) console.log(`- ${warning}`);
+    console.log("This is commonly caused by DNS or TLS propagation immediately after creating custom domains. The deployment does not need to be repeated; check these URLs again in a few minutes.");
+  }
   console.log("Next: sign into the admin site, register the enabled sending domains, add sender identities, and create an API key.");
 }
 
@@ -610,19 +615,54 @@ async function ensureEmailEventSubscriptions({ accountId, domains, enabledDomain
 }
 
 async function verifyEndpoints({ adminHostname, apiHostname, unsubscribeHostnames }) {
-  const admin = await fetch(`https://${adminHostname}/`, { redirect: "manual" });
-  if (![302, 303, 401, 403].includes(admin.status)) fail(`Admin endpoint returned unexpected status ${admin.status}.`);
-  console.log(`✓ Admin is protected (${admin.status})`);
+  const checks = [
+    {
+      label: "Admin protection",
+      url: `https://${adminHostname}/`,
+      expected: [302, 303, 401, 403],
+      success: (status) => `✓ Admin is protected (${status})`,
+    },
+    {
+      label: "API authentication",
+      url: `https://${apiHostname}/segments`,
+      expected: [401],
+      success: () => "✓ API requires an API key (401)",
+    },
+    ...Object.values(unsubscribeHostnames).map((hostname) => ({
+      label: `Unsubscribe handler ${hostname}`,
+      url: `https://${hostname}/unsubscribe/not-a-real-token`,
+      expected: [400, 404],
+      success: () => `✓ ${hostname} reaches the public unsubscribe handler`,
+    })),
+  ];
+  const pending = new Map(checks.map((check) => [check.label, { check, result: "not checked" }]));
+  const retryDelays = [0, 2_000, 4_000, 8_000, 12_000, 15_000];
 
-  const api = await fetch(`https://${apiHostname}/segments`, { redirect: "manual" });
-  if (api.status !== 401) fail(`API authentication check returned ${api.status}, expected 401.`);
-  console.log("✓ API requires an API key (401)");
-
-  for (const hostname of Object.values(unsubscribeHostnames)) {
-    const response = await fetch(`https://${hostname}/unsubscribe/not-a-real-token`, { redirect: "manual" });
-    if (![400, 404].includes(response.status)) fail(`${hostname} returned unexpected status ${response.status}.`);
-    console.log(`✓ ${hostname} reaches the public unsubscribe handler`);
+  for (let attempt = 0; attempt < retryDelays.length && pending.size; attempt += 1) {
+    if (retryDelays[attempt]) {
+      console.log(`Waiting ${retryDelays[attempt] / 1_000}s for ${pending.size} endpoint(s) to become ready...`);
+      await delay(retryDelays[attempt]);
+    }
+    await Promise.all([...pending.values()].map(async ({ check }) => {
+      try {
+        const response = await fetch(check.url, { redirect: "manual", signal: AbortSignal.timeout(10_000) });
+        if (check.expected.includes(response.status)) {
+          console.log(check.success(response.status));
+          pending.delete(check.label);
+        } else {
+          pending.set(check.label, { check, result: `returned ${response.status}; expected ${check.expected.join(" or ")}` });
+        }
+      } catch (error) {
+        pending.set(check.label, { check, result: error.cause?.message ?? error.message });
+      }
+    }));
   }
+
+  return [...pending.values()].map(({ check, result }) => `${check.label} at ${check.url}: ${result}`);
+}
+
+function delay(milliseconds) {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
 }
 
 function parseEmailSendingDomains(output) {
