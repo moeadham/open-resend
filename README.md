@@ -1,6 +1,32 @@
 # Open Re-send
 
-A small, Cloudflare-native mailing-list and campaign service with a Resend-compatible API. It supports named segments, recipient-facing Topics, contacts, multiple sending domains and senders, draft/immediate/scheduled broadcasts, email preferences, delivery events, and a server-rendered administration site.
+A lightweight, self-hosted mailing-list and campaign service built entirely on Cloudflare. Open Re-send provides a familiar browser interface for managing audiences and broadcasts, plus a focused Resend-compatible API for applications that already use the official Resend SDK.
+
+It is designed for small lists and straightforward campaigns rather than transactional email or marketing automation.
+
+## What it includes
+
+- Contacts, named segments, and optional recipient-facing Topics
+- Multiple sending domains and sender identities
+- Rich-text campaign editing with preview text and test sends
+- Draft, immediate, and scheduled broadcasts
+- Searchable audience management and responsive desktop/mobile administration
+- Global and Topic-specific unsubscribe preferences
+- Branded unsubscribe pages, RFC 8058 headers, and physical-address footers
+- Delivery status, retry controls, suppressions, and dead-letter handling
+- Resend-style `re_` API keys and a compatible subset of the official SDK
+- Cloudflare Access protection for the complete admin hostname
+
+## Typical workflow
+
+1. Enable a domain in Cloudflare Email Sending, then register it in **Domains**.
+2. Add one or more sender identities. Every sender requires a physical postal address.
+3. Create a segment and add contacts to it. A contact must be an active member of the selected segment to receive a broadcast.
+4. Optionally create a Topic when recipients should be able to unsubscribe from one category without leaving every mailing.
+5. Create a broadcast, choose a sender and segment, write the message, and save it for review.
+6. Send a test, send immediately, or schedule delivery for later.
+
+Topics are optional. A broadcast with a Topic unsubscribes recipients from that Topic; a broadcast without one uses global unsubscribe.
 
 ## Architecture
 
@@ -8,11 +34,17 @@ A small, Cloudflare-native mailing-list and campaign service with a Resend-compa
 - The complete admin hostname is protected by a Cloudflare Zero Trust Access self-hosted application. The Worker also verifies the Access JWT.
 - D1 stores application data, Queues fan out one message per recipient, and one Durable Object alarm is used per scheduled broadcast.
 - Cloudflare Email Service is the only outbound transport.
-- The admin interface is server-rendered Hono JSX. Quill is bundled locally; no CDN scripts or application passwords are used.
+- The admin interface is server-rendered Hono JSX with locally bundled Kiwa enhancements and Quill. No client-side SPA, CDN scripts, application passwords, or fallback login screen are used.
+
+| Hostname | Purpose | Authentication |
+| --- | --- | --- |
+| `ADMIN_HOSTNAME` | Complete browser admin | Cloudflare Access plus Worker-side JWT validation |
+| `API_HOSTNAME` | Resend-compatible API | `Authorization: Bearer re_...` |
+| Per-domain unsubscribe hostname | Public preference and unsubscribe pages | Opaque membership or contact token |
 
 ## Local development
 
-Requirements: Node.js 22+, a Cloudflare account, and Wrangler authentication.
+Requirements: Node.js 22+, a Cloudflare account, and Wrangler authentication. Terraform 1.10+ is additionally required for provisioning and production deploys.
 
 ```bash
 npm install
@@ -21,6 +53,8 @@ npm run build:assets
 npx wrangler d1 migrations apply cloudflare-resend --local
 npm run dev
 ```
+
+Open [http://localhost:8787](http://localhost:8787). The local D1 database is independent of the deployed database, so development changes do not affect production data.
 
 The local admin bypass works only when all three conditions hold:
 
