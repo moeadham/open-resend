@@ -99,7 +99,15 @@ Run the guarded teardown from the same checkout that performed the deployment:
 npm run teardown
 ```
 
-Teardown reads the ignored `.deployment.json` and Terraform state, inventories the exact remote resources, creates a Terraform destroy plan, and requires the phrase `TEAR DOWN <worker-name>` before deleting anything. It removes the Worker and custom domains, Cloudflare Access application and policy, Open Resend event subscriptions, queues, D1 database, and local generated deployment state. Deleting D1 permanently deletes its data.
+Teardown reads the ignored `.deployment.json` and Terraform state, inventories the exact remote resources, and creates a Terraform destroy plan before deleting anything. By default it asks `y/N` immediately before each deletion: every event subscription, the Worker and custom domains, the Access configuration, every queue, the D1 database, and the local generated deployment state. Pressing Enter keeps that item. Deleting D1 permanently deletes its data.
+
+To approve every item in the displayed teardown plan without the per-item questions, pass `-y` (or `--yes`):
+
+```bash
+npm run teardown -- -y
+```
+
+If the Worker is kept, teardown also keeps its Access protection, bound queues, D1 database, and local deployment state. If any remote item is kept, the local state is preserved so a later teardown can safely finish the job.
 
 Teardown never disables Cloudflare Email Sending and never removes its onboarded sending domains. It also refuses to guess ownership when `.deployment.json` or Terraform state is missing.
 

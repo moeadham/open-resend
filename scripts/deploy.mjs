@@ -23,6 +23,7 @@ const emailEvents = [
 
 let temporaryDirectory;
 const operationName = process.argv.includes("--teardown") ? "Teardown" : "Deployment";
+const assumeYes = process.argv.includes("-y") || process.argv.includes("--yes");
 
 try {
   if (process.argv.includes("--teardown")) await teardown();
@@ -37,6 +38,9 @@ try {
 async function teardown() {
   heading("Open Resend teardown preflight");
   console.log("This removes only the resources recorded for this installation. Email Sending and its onboarded domains are never disabled.\n");
+  if (!assumeYes && !process.stdin.isTTY) {
+    fail("Interactive teardown requires a terminal. Rerun with -y or --yes only after reviewing the deletion plan.");
+  }
 
   requireCommand("node", ["--version"]);
   requireCommand("npm", ["--version"]);
@@ -104,39 +108,93 @@ async function teardown() {
   console.log(`D1 and all its data:  ${database ? "DELETE PERMANENTLY" : "already absent"} ${deployment.d1DatabaseName} (${deployment.d1DatabaseId})`);
   for (const domain of sendingDomains) console.log(`Email Sending:        KEEP ENABLED ${domain}`);
 
-  const confirmationText = `TEAR DOWN ${deployment.workerName}`;
-  const confirmation = await ask(`Type ${confirmationText} to continue`, "");
-  if (confirmation !== confirmationText) fail("Confirmation did not match; no resources were deleted.");
+  console.log(assumeYes
+    ? "\n-y/--yes supplied: every listed deletion is approved."
+    : "\nYou will be asked about each deletion. Press Enter or answer n to keep an item.");
+
+  const retained = [];
 
   section("Deleting Email Sending event subscriptions");
   for (const subscription of managedSubscriptions) {
-    command("npx", ["--no-install", "wrangler", "queues", "subscription", "delete", deployment.emailEventsQueue, "--id", subscription.id, "--force"], { env: cloudflareEnv });
+    const label = `Email Sending event subscription for ${subscription.source.domain} (${subscription.id})`;
+    if (await confirmDeletion(label)) {
+      command("npx", ["--no-install", "wrangler", "queues", "subscription", "delete", deployment.emailEventsQueue, "--id", subscription.id, "--force"], { env: cloudflareEnv });
+    } else {
+      retain(retained, label);
+    }
   }
 
+  let workerRetained = false;
   if (workerExists) {
-    section("Deleting Worker and its custom domains");
-    command("npx", ["--no-install", "wrangler", "delete", deployment.workerName, "--force"], { env: cloudflareEnv });
+    const label = `Worker ${deployment.workerName} and its custom-domain routes`;
+    if (await confirmDeletion(label)) {
+      section("Deleting Worker and its custom domains");
+      command("npx", ["--no-install", "wrangler", "delete", deployment.workerName, "--force"], { env: cloudflareEnv });
+    } else {
+      workerRetained = true;
+      retain(retained, label);
+    }
   }
 
-  section("Destroying Cloudflare Access application and policy");
-  command(terraform, ["-chdir=infra/access", "apply", "-auto-approve", planPath], { env: terraformEnv });
+  if (accessResources.length) {
+    const label = `Cloudflare Access configuration for https://${terraformVars.admin_hostname} (${accessResources.length} Terraform resource(s))`;
+    if (workerRetained) {
+      retain(retained, label, "the Worker still needs Access protection");
+    } else if (await confirmDeletion(label)) {
+      section("Destroying Cloudflare Access application and policy");
+      command(terraform, ["-chdir=infra/access", "apply", "-auto-approve", planPath], { env: terraformEnv });
+    } else {
+      retain(retained, label);
+    }
+  }
 
   section("Deleting queues");
   for (const name of queueNames) {
-    if (existingQueues.has(name)) command("npx", ["--no-install", "wrangler", "queues", "delete", name], { env: { ...cloudflareEnv, CI: "true" } });
+    if (!existingQueues.has(name)) continue;
+    const label = `queue ${name}`;
+    const retainedEmailSubscription = name === deployment.emailEventsQueue
+      && managedSubscriptions.some((subscription) => retained.includes(`Email Sending event subscription for ${subscription.source.domain} (${subscription.id})`));
+    if (workerRetained) {
+      retain(retained, label, "the retained Worker is bound to it");
+    } else if (retainedEmailSubscription) {
+      retain(retained, label, "an Email Sending event subscription still targets it");
+    } else if (await confirmDeletion(label)) {
+      command("npx", ["--no-install", "wrangler", "queues", "delete", name], { env: { ...cloudflareEnv, CI: "true" } });
+    } else {
+      retain(retained, label);
+    }
   }
 
   if (database) {
-    section("Deleting D1 database and all data");
-    command("npx", ["--no-install", "wrangler", "d1", "delete", deployment.d1DatabaseId, "--skip-confirmation"], { env: cloudflareEnv });
+    const label = `D1 database ${deployment.d1DatabaseName} (${deployment.d1DatabaseId}) and ALL of its data`;
+    if (workerRetained) {
+      retain(retained, label, "the retained Worker is bound to it");
+    } else if (await confirmDeletion(label)) {
+      section("Deleting D1 database and all data");
+      command("npx", ["--no-install", "wrangler", "d1", "delete", deployment.d1DatabaseId, "--skip-confirmation"], { env: cloudflareEnv });
+    } else {
+      retain(retained, label);
+    }
   }
 
-  for (const path of [deploymentPath, resolve(root, "wrangler.deploy.jsonc"), terraformVarsPath, terraformStatePath, `${terraformStatePath}.backup`]) {
-    rmSync(path, { force: true });
+  const generatedPaths = [deploymentPath, resolve(root, "wrangler.deploy.jsonc"), terraformVarsPath, terraformStatePath, `${terraformStatePath}.backup`];
+  const existingGeneratedPaths = generatedPaths.filter(existsSync);
+  if (retained.length) {
+    retain(retained, "local generated deployment state", "it is required to safely finish teardown later");
+  } else if (existingGeneratedPaths.length && await confirmDeletion(`local generated deployment state (${existingGeneratedPaths.length} file(s))`)) {
+    for (const path of existingGeneratedPaths) rmSync(path, { force: true });
+  } else if (existingGeneratedPaths.length) {
+    retain(retained, "local generated deployment state");
   }
 
-  heading("Teardown complete");
-  console.log("The Worker, Access configuration, event subscriptions, queues, and D1 database were removed.");
+  heading(retained.length ? "Teardown finished with retained items" : "Teardown complete");
+  if (retained.length) {
+    console.log("The following items were kept:");
+    for (const label of retained) console.log(`- ${label}`);
+    console.log("\nRun teardown again when you are ready to remove the remaining items.");
+  } else {
+    console.log("The Worker, Access configuration, event subscriptions, queues, D1 database, and local deployment state were removed.");
+  }
   console.log(`Email Sending remains enabled for: ${sendingDomains.join(", ")}`);
 }
 
@@ -351,6 +409,20 @@ async function ask(label, defaultValue) {
   const answer = (await rl.question(`${label}${suffix}: `)).trim();
   rl.close();
   return answer || defaultValue;
+}
+
+async function confirmDeletion(label) {
+  if (assumeYes) {
+    console.log(`Delete ${label}? yes (-y)`);
+    return true;
+  }
+  const answer = (await ask(`Delete ${label}?`, "N")).toLowerCase();
+  return answer === "y" || answer === "yes";
+}
+
+function retain(retained, label, reason) {
+  retained.push(label);
+  console.log(`Keep ${label}${reason ? ` — ${reason}` : ""}.`);
 }
 
 async function requestTerraformToken(account) {
