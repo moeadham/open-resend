@@ -153,6 +153,7 @@
 .detail-head p, .section-head p { @apply mb-0 mt-1; }
 .detail-grid { @apply grid grid-cols-[2fr_1fr] gap-4; }
 .danger-zone { @apply border-destructive/30; }
+.danger-zone p { @apply mb-4 mt-2; }
 .badge { @apply inline-flex items-center rounded-md bg-secondary px-2 py-1 text-xs font-medium capitalize text-foreground-muted; }
 .badge.good, .badge.sent, .badge.delivered, .badge.accepted { @apply bg-success-soft text-success; }
 .badge.bad, .badge.failed, .badge.bounced, .badge.rejected, .badge.complained { @apply bg-destructive-soft text-destructive; }
@@ -289,6 +290,13 @@
 .schedule-error { @apply mb-0 mt-2 min-h-4 text-xs text-destructive; }
 
 @media (max-width: 1100px) {
+  .toolbar { @apply grid-cols-2; }
+  .toolbar > button { @apply w-full; }
+  .detail-grid { @apply grid-cols-1; }
+  .contact-memberships .section-head { @apply flex-col; }
+  .contact-memberships .section-head > div { @apply max-w-2xl; }
+  .contact-memberships .segment-add { @apply w-full; }
+  .contact-memberships .segment-add select { @apply min-w-0 flex-1; }
   .broadcast-review-layout { @apply grid-cols-1; }
   .broadcast-send-column { @apply static order-first grid-cols-2; }
   .broadcast-send-column .review-card:first-child, .broadcast-send-column .campaign-details { @apply col-span-2; }
