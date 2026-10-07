@@ -33,7 +33,7 @@ variable "allowed_account_id" {
 variable "application_name" {
   description = "Name shown for the Access application."
   type        = string
-  default     = "Open re-send Admin"
+  default     = "Open Re-send Admin"
 }
 
 variable "session_duration" {

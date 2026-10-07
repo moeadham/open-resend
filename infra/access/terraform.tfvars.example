@@ -3,5 +3,5 @@ admin_hostname     = "mail-admin.example.com"
 allowed_account_id = null
 
 # Optional:
-# application_name = "Open re-send Admin"
+# application_name = "Open Re-send Admin"
 # session_duration = "24h"
