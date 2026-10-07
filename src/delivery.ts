@@ -1,7 +1,7 @@
 import { EmailMessage } from "cloudflare:email";
 import { createMimeMessage, Mailbox } from "mimetext/browser";
 import { AppError, escapeHtml, logError, nowIso, randomToken, sha256, stripHtml, unsubscribeBaseUrl } from "./lib";
-import type { BroadcastRow, DeliveryDetail, DeliveryQueueMessage, EmailEventMessage } from "./types";
+import type { BroadcastQueueMessage, BroadcastRow, DeliveryDetail, DeliveryQueueMessage, EmailEventMessage } from "./types";
 
 const TRANSIENT_EMAIL_CODES = new Set([
   "E_RATE_LIMIT_EXCEEDED",
@@ -9,6 +9,9 @@ const TRANSIENT_EMAIL_CODES = new Set([
   "E_DELIVERY_FAILED",
   "E_INTERNAL_SERVER_ERROR",
 ]);
+
+const DELIVERY_FANOUT_BATCH_SIZE = 99;
+const DELIVERY_INSERT_BATCH_SIZE = 1_000;
 
 export async function enqueueBroadcast(env: Env, broadcastId: string): Promise<number> {
   const broadcast = await env.DB.prepare("SELECT * FROM broadcasts WHERE id = ?")
@@ -18,15 +21,18 @@ export async function enqueueBroadcast(env: Env, broadcastId: string): Promise<n
   await validateBroadcastReady(env, broadcastId);
 
   const now = nowIso();
-  await env.DB.prepare(
+  const claimed = await env.DB.prepare(
     `UPDATE broadcasts SET status = 'queueing', updated_at = ?
-     WHERE id = ? AND status IN ('draft', 'scheduled', 'queueing', 'queued')`,
+     WHERE id = ? AND status IN ('draft', 'scheduled')`,
   ).bind(now, broadcastId).run();
+  if (!claimed.meta.changes) {
+    const existing = await env.DB.prepare("SELECT COUNT(*) AS count FROM deliveries WHERE broadcast_id = ?")
+      .bind(broadcastId).first<{ count: number }>();
+    return Number(existing?.count ?? 0);
+  }
 
-  await env.DB.prepare(
-    `INSERT OR IGNORE INTO deliveries
-       (id, broadcast_id, contact_id, recipient, status, attempts, created_at, updated_at)
-     SELECT ? || ':' || c.id, ?, c.id, c.email, 'pending', 0, ?, ?
+  const eligible = await env.DB.prepare(
+    `SELECT COUNT(*) AS count
      FROM segment_contacts sc
      JOIN contacts c ON c.id = sc.contact_id
      WHERE sc.segment_id = ?
@@ -37,32 +43,96 @@ export async function enqueueBroadcast(env: Env, broadcastId: string): Promise<n
          (SELECT ct.subscription FROM contact_topics ct WHERE ct.topic_id = ? AND ct.contact_id = c.id),
          (SELECT t.default_subscription FROM topics t WHERE t.id = ?)
        ) = 'opt_in')`,
-  ).bind(broadcastId, broadcastId, now, now, broadcast.segment_id, broadcast.topic_id, broadcast.topic_id, broadcast.topic_id).run();
+  ).bind(broadcast.segment_id, broadcast.topic_id, broadcast.topic_id, broadcast.topic_id).first<{ count: number }>();
+  const total = Number(eligible?.count ?? 0);
+  if (total === 0) {
+    await env.DB.prepare("UPDATE broadcasts SET status = 'sent', sent_at = ?, updated_at = ? WHERE id = ? AND status = 'queueing'")
+      .bind(nowIso(), nowIso(), broadcastId).run();
+    return 0;
+  }
+
+  try {
+    await env.DELIVERY_QUEUE.send({
+      type: "broadcast_fanout",
+      broadcastId,
+      createDeliveries: true,
+      queuedAt: now,
+    } satisfies BroadcastQueueMessage);
+  } catch (error) {
+    await env.DB.prepare("UPDATE broadcasts SET status = ?, updated_at = ? WHERE id = ? AND status = 'queueing'")
+      .bind(broadcast.status, nowIso(), broadcastId).run();
+    throw error;
+  }
+  return total;
+}
+
+export async function processBroadcastQueueMessage(message: Message<BroadcastQueueMessage>, env: Env): Promise<void> {
+  const job = message.body;
+  const broadcast = await env.DB.prepare("SELECT segment_id,topic_id,status FROM broadcasts WHERE id = ?")
+    .bind(job.broadcastId).first<Pick<BroadcastRow, "segment_id" | "topic_id" | "status">>();
+  if (!broadcast || broadcast.status !== "queueing") {
+    message.ack();
+    return;
+  }
 
   const pending = await env.DB.prepare(
-    "SELECT id FROM deliveries WHERE broadcast_id = ? AND status = 'pending' ORDER BY id",
-  ).bind(broadcastId).all<{ id: string }>();
+    "SELECT id FROM deliveries WHERE broadcast_id = ? AND status = 'pending' ORDER BY id LIMIT ?",
+  ).bind(job.broadcastId, DELIVERY_FANOUT_BATCH_SIZE).all<{ id: string }>();
+  if (pending.results.length > 0) {
+    await env.DELIVERY_QUEUE.sendBatch([
+      ...pending.results.map(({ id }) => ({ body: { deliveryId: id } satisfies DeliveryQueueMessage })),
+      { body: { ...job } satisfies BroadcastQueueMessage },
+    ]);
+    const placeholders = pending.results.map(() => "?").join(",");
+    await env.DB.prepare(
+      `UPDATE deliveries SET status = 'enqueued', updated_at = ? WHERE status = 'pending' AND id IN (${placeholders})`,
+    ).bind(nowIso(), ...pending.results.map(({ id }) => id)).run();
+    message.ack();
+    return;
+  }
 
-  for (let index = 0; index < pending.results.length; index += 100) {
-    const chunk = pending.results.slice(index, index + 100);
-    await env.DELIVERY_QUEUE.sendBatch(
-      chunk.map(({ id }) => ({ body: { deliveryId: id } satisfies DeliveryQueueMessage })),
-    );
-    if (chunk.length > 0) {
-      const placeholders = chunk.map(() => "?").join(",");
+  if (job.createDeliveries) {
+    const afterContactId = job.afterContactId ?? "";
+    const next = await env.DB.prepare(
+      `SELECT MAX(id) AS id FROM (
+         SELECT c.id
+         FROM segment_contacts sc JOIN contacts c ON c.id = sc.contact_id
+         WHERE sc.segment_id = ? AND sc.status = 'subscribed' AND c.id > ?
+           AND c.created_at <= ? AND sc.subscribed_at <= ?
+           AND c.unsubscribed = 0 AND c.suppression_reason IS NULL
+           AND (? IS NULL OR COALESCE(
+             (SELECT ct.subscription FROM contact_topics ct WHERE ct.topic_id = ? AND ct.contact_id = c.id),
+             (SELECT t.default_subscription FROM topics t WHERE t.id = ?)
+           ) = 'opt_in')
+         ORDER BY c.id LIMIT ?
+       )`,
+    ).bind(broadcast.segment_id, afterContactId, job.queuedAt, job.queuedAt, broadcast.topic_id, broadcast.topic_id, broadcast.topic_id, DELIVERY_INSERT_BATCH_SIZE)
+      .first<{ id: string | null }>();
+    if (next?.id) {
+      const now = nowIso();
       await env.DB.prepare(
-        `UPDATE deliveries SET status = 'enqueued', updated_at = ? WHERE status = 'pending' AND id IN (${placeholders})`,
-      ).bind(nowIso(), ...chunk.map(({ id }) => id)).run();
+        `INSERT OR IGNORE INTO deliveries
+           (id,broadcast_id,contact_id,recipient,status,attempts,created_at,updated_at)
+         SELECT ? || ':' || c.id, ?, c.id, c.email, 'pending', 0, ?, ?
+         FROM segment_contacts sc JOIN contacts c ON c.id = sc.contact_id
+         WHERE sc.segment_id = ? AND sc.status = 'subscribed' AND c.id > ? AND c.id <= ?
+           AND c.created_at <= ? AND sc.subscribed_at <= ?
+           AND c.unsubscribed = 0 AND c.suppression_reason IS NULL
+           AND (? IS NULL OR COALESCE(
+             (SELECT ct.subscription FROM contact_topics ct WHERE ct.topic_id = ? AND ct.contact_id = c.id),
+             (SELECT t.default_subscription FROM topics t WHERE t.id = ?)
+           ) = 'opt_in')`,
+      ).bind(job.broadcastId, job.broadcastId, now, now, broadcast.segment_id, afterContactId, next.id, job.queuedAt, job.queuedAt, broadcast.topic_id, broadcast.topic_id, broadcast.topic_id).run();
+      await env.DELIVERY_QUEUE.send({ ...job, afterContactId: next.id } satisfies BroadcastQueueMessage);
+      message.ack();
+      return;
     }
   }
 
-  const count = await env.DB.prepare("SELECT COUNT(*) AS count FROM deliveries WHERE broadcast_id = ?")
-    .bind(broadcastId).first<{ count: number }>();
-  const total = Number(count?.count ?? 0);
-  await env.DB.prepare(
-    `UPDATE broadcasts SET status = ?, sent_at = CASE WHEN ? = 0 THEN ? ELSE sent_at END, updated_at = ? WHERE id = ?`,
-  ).bind(total === 0 ? "sent" : "queued", total, nowIso(), nowIso(), broadcastId).run();
-  return total;
+  await env.DB.prepare("UPDATE broadcasts SET status = 'queued', updated_at = ? WHERE id = ? AND status = 'queueing'")
+    .bind(nowIso(), job.broadcastId).run();
+  await finishBroadcastIfComplete(env.DB, job.broadcastId);
+  message.ack();
 }
 
 export async function processDeliveryMessage(message: Message<DeliveryQueueMessage>, env: Env): Promise<void> {
@@ -145,7 +215,7 @@ export async function processDeliveryMessage(message: Message<DeliveryQueueMessa
         "UPDATE deliveries SET status = 'accepted', message_id = ?, last_error = NULL, updated_at = ? WHERE id = ?",
       ).bind(result.messageId, nowIso(), deliveryId),
       env.DB.prepare(
-        "UPDATE broadcasts SET status = 'sending', updated_at = ? WHERE id = ? AND status IN ('queued', 'queueing')",
+        "UPDATE broadcasts SET status = 'sending', updated_at = ? WHERE id = ? AND status = 'queued'",
       ).bind(nowIso(), detail.broadcast_id),
     ]);
     await finishBroadcastIfComplete(env.DB, detail.broadcast_id);
@@ -248,7 +318,7 @@ async function finishBroadcastIfComplete(db: D1Database, broadcastId: string): P
   ).bind(broadcastId).first<{ count: number }>();
   if (Number(unfinished?.count ?? 0) === 0) {
     await db.prepare(
-      "UPDATE broadcasts SET status = 'sent', sent_at = COALESCE(sent_at, ?), updated_at = ? WHERE id = ? AND status != 'cancelled'",
+      "UPDATE broadcasts SET status = 'sent', sent_at = COALESCE(sent_at, ?), updated_at = ? WHERE id = ? AND status IN ('queued','sending')",
     ).bind(nowIso(), nowIso(), broadcastId).run();
   }
 }
@@ -286,15 +356,24 @@ export async function processEmailEvent(message: Message<EmailEventMessage>, env
   message.ack();
 }
 
-export async function processDeadLetter(batch: MessageBatch<DeliveryQueueMessage>, env: Env): Promise<void> {
+export async function processDeadLetter(batch: MessageBatch<DeliveryQueueMessage | BroadcastQueueMessage>, env: Env): Promise<void> {
   for (const message of batch.messages) {
+    const target = "broadcastId" in message.body
+      ? { broadcastId: message.body.broadcastId }
+      : { deliveryId: message.body.deliveryId };
     try {
+      if ("broadcastId" in message.body) {
+        await env.DB.prepare("UPDATE broadcasts SET status = 'failed', updated_at = ? WHERE id = ? AND status = 'queueing'")
+          .bind(nowIso(), message.body.broadcastId).run();
+        message.ack();
+        continue;
+      }
       await env.DB.prepare(
         "UPDATE deliveries SET status = 'failed', last_error = 'Queue retries exhausted', updated_at = ? WHERE id = ? AND status NOT IN ('accepted', 'delivered')",
       ).bind(nowIso(), message.body.deliveryId).run();
       message.ack();
     } catch (error) {
-      logError("dead-letter update failed", error, { deliveryId: message.body.deliveryId });
+      logError("dead-letter update failed", error, target);
       message.retry();
     }
   }
@@ -337,20 +416,24 @@ export async function retryFailedDeliveries(env: Env, broadcastId: string): Prom
   await env.DB.prepare(
     "UPDATE deliveries SET status = 'pending', last_error = NULL, updated_at = ? WHERE broadcast_id = ? AND status = 'failed'",
   ).bind(now, broadcastId).run();
-  const rows = await env.DB.prepare("SELECT id FROM deliveries WHERE broadcast_id = ? AND status = 'pending'")
-    .bind(broadcastId).all<{ id: string }>();
-  for (let index = 0; index < rows.results.length; index += 100) {
-    const chunk = rows.results.slice(index, index + 100);
-    await env.DELIVERY_QUEUE.sendBatch(chunk.map(({ id }) => ({ body: { deliveryId: id } })));
-    if (chunk.length) {
-      const placeholders = chunk.map(() => "?").join(",");
-      await env.DB.prepare(`UPDATE deliveries SET status = 'enqueued', updated_at = ? WHERE id IN (${placeholders})`)
-        .bind(nowIso(), ...chunk.map(({ id }) => id)).run();
-    }
+  const count = await env.DB.prepare("SELECT COUNT(*) AS count FROM deliveries WHERE broadcast_id = ? AND status = 'pending'")
+    .bind(broadcastId).first<{ count: number }>();
+  const total = Number(count?.count ?? 0);
+  if (!total) return 0;
+  const previous = await env.DB.prepare("SELECT status FROM broadcasts WHERE id = ?").bind(broadcastId).first<{ status: string }>();
+  await env.DB.prepare("UPDATE broadcasts SET status = 'queueing', sent_at = NULL, updated_at = ? WHERE id = ?")
+    .bind(nowIso(), broadcastId).run();
+  try {
+    await env.DELIVERY_QUEUE.send({
+      type: "broadcast_fanout",
+      broadcastId,
+      createDeliveries: false,
+      queuedAt: now,
+    } satisfies BroadcastQueueMessage);
+  } catch (error) {
+    await env.DB.prepare("UPDATE broadcasts SET status = ?, updated_at = ? WHERE id = ? AND status = 'queueing'")
+      .bind(previous?.status ?? "failed", nowIso(), broadcastId).run();
+    throw error;
   }
-  if (rows.results.length) {
-    await env.DB.prepare("UPDATE broadcasts SET status = 'queued', sent_at = NULL, updated_at = ? WHERE id = ?")
-      .bind(nowIso(), broadcastId).run();
-  }
-  return rows.results.length;
+  return total;
 }

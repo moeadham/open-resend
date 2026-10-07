@@ -126,8 +126,6 @@ Before the first deployment, activate a Zero Trust plan for the Cloudflare accou
 
 In **Cloudflare Dashboard → My Profile → API Tokens**, select **Create Token**, then **Create Custom Token**.
 
-![Cloudflare custom API token form](docs/images/cloudflare-token/01-custom-token-form.jpg)
-
 Name the token `cloudflare-resend-terraform` and add these account permissions:
 
 - **Access: Apps and Policies → Edit**
@@ -135,13 +133,9 @@ Name the token `cloudflare-resend-terraform` and add these account permissions:
 
 Under **Account Resources**, choose **Include → Specific account** and select only the account where this application will be deployed. An IP restriction or short TTL is optional, but a short TTL is sensible for a one-off manual deployment.
 
-![Scoped Access permissions and account resource](docs/images/cloudflare-token/02-scoped-permissions.jpg)
-
 Select **Continue to summary** and verify that the summary contains only the two permissions and the intended account.
 
-![Cloudflare API token summary](docs/images/cloudflare-token/03-token-summary.jpg)
-
-Select **Create Token**, copy the token from the one-time display, and export it for Terraform. The screenshots intentionally stop before the secret is shown. Never commit the token, paste it into an issue, or include it in a screenshot.
+Select **Create Token**, copy the token from the one-time display, and export it for Terraform. Never commit the token, paste it into an issue, or include it in a screenshot.
 
 ```bash
 export CLOUDFLARE_API_TOKEN="paste-token-here"
@@ -311,14 +305,63 @@ Also outside v1: public signup forms, broadcast recipient export, and open/click
 - Each email includes RFC 8058 `List-Unsubscribe` and `List-Unsubscribe-Post` headers.
 - Browser `GET` displays confirmation or preference toggles without changing state. `POST` changes only the requested Topic preference unless the recipient explicitly chooses global unsubscribe.
 - Authenticated admin and API operations can explicitly update global and Topic preferences.
-- Queue messages contain only a delivery ID. State and cancellation are rechecked immediately before sending.
+- Delivery Queue messages contain only a delivery ID. Large broadcasts use bounded coordinator messages to create and enqueue deliveries asynchronously, and state and cancellation are rechecked before work continues.
 - Queue delivery is at least once. Atomic delivery claims remove normal duplicates, but a crash after Email Service accepts a message and before D1 records that result can still cause a rare duplicate.
+
+## Scale limits and the 50,000-contact stress test
+
+Run the isolated stress suite with:
+
+```bash
+npm run test:stress
+```
+
+It creates 50,000 contacts and segment memberships in the Workers/D1 emulator, then verifies:
+
+- the first, second, and last (`page=1250`) admin audience pages contain 40 distinct contacts with correct navigation;
+- filtered search and the broadcast's 50,000-recipient eligibility count;
+- exactly 50,000 unique delivery IDs are created and enqueued;
+- delivery creation is paged at 1,000 rows, while Queue batches contain at most 99 deliveries plus one continuation message;
+- a coordinator message routes through the configured emulator Queue binding and Worker queue handler.
+
+The full fan-out assertion captures delivery messages instead of consuming them, so it never calls `EMAIL.send`. It proves bounded database and Queue behavior, not remote Email Service throughput, inbox delivery, or sender reputation.
+
+To inspect the same data in the local admin, run:
+
+```bash
+npm run emulator:seed:stress
+npm run dev
+```
+
+The seeder deletes and replaces data only in Wrangler's local D1 emulator. It always uses `--local` and must not be changed to `--remote` for this test.
+
+### What may limit larger audiences
+
+There is no application-level hard limit at 50,000 contacts. The fan-out work is split across Queue invocations, so memory and database-operation counts do not grow without bound inside one request. Past 50,000, watch these pressure points:
+
+| Area | Likely pressure point |
+| --- | --- |
+| Admin pagination | The admin currently uses `LIMIT`/`OFFSET`. Deep pages must scan and discard earlier rows, so latency and D1 rows read grow with the page number. Cursor pagination should replace it before routinely managing hundreds of thousands or millions of contacts. |
+| Search and totals | Email search uses `LIKE '%term%'`, and the audience metrics count the full contacts table. These are linear scans; repeated admin views can consume substantially more rows than the 40 records rendered. |
+| D1 write usage | A 50,000-contact import writes at least 50,000 contact rows and 50,000 membership rows, plus index writes. That can consume the entire Workers Free allowance of 100,000 D1 rows written per day; the local emulator does not consume this quota. |
+| D1 storage | D1 has no row-count limit, but each database is limited to 500 MB on Workers Free and 10 GB on Workers Paid. Delivery history normally grows faster than the audience: each full-audience broadcast adds another delivery row per eligible contact. |
+| D1 throughput | One D1 database executes queries serially. Large concurrent imports, admin scans, event updates, and delivery consumers can queue behind one another and eventually return overloaded errors. Individual D1 queries are limited to 30 seconds, which is why fan-out writes are chunked. |
+| Queue capacity | Cloudflare allows at most 100 messages per `sendBatch` and consumer batch. The application deliberately uses 99 delivery messages plus one continuation. Larger campaigns increase the number of Queue operations, not the size of an individual operation. |
+| Queue delay/backlog | A queue supports 5,000 messages per second, a 25 GB backlog, up to 250 concurrent push consumers, and a 15-minute consumer invocation. Retention is 24 hours on Workers Free and configurable up to 14 days on other plans. A slow or quota-limited email transport can let a large campaign approach retention or backlog limits. |
+| Worker resources | Workers have 128 MB of memory per isolate. The bounded fan-out avoids the previous recipient-proportional in-memory ID array, but MIME generation, logging, and concurrent delivery still consume CPU and memory per invocation. |
+| Email Service | Daily sending limits are account-specific and increase according to sending behavior, deliverability, and account standing; Cloudflare does not publish one universal number. A campaign larger than the available daily quota can receive `E_RATE_LIMIT_EXCEEDED` or `E_DAILY_LIMIT_EXCEEDED`. This Worker retries transient failures, but its configured retry count is not a substitute for confirming quota before a large send. |
+| Message content | Email Service limits normal outbound messages to 5 MiB and subjects to 998 characters. Open Re-send sends one recipient per message, so the platform's 50-recipient-per-message limit does not increase campaign throughput. |
+
+Cloudflare currently describes Email Service as intended for transactional email rather than marketing or bulk-sender workloads. Confirm that the intended campaign use is supported, request sufficient sending quota, and warm up domains responsibly before attempting a real 50,000-recipient send.
+
+Limits change. The values above were reviewed on 2026-10-07 against the official [D1 limits](https://developers.cloudflare.com/d1/platform/limits/), [D1 pricing and row quotas](https://developers.cloudflare.com/d1/platform/pricing/), [Queues limits](https://developers.cloudflare.com/queues/platform/limits/), [Workers limits](https://developers.cloudflare.com/workers/platform/limits/), and [Email Service limits](https://developers.cloudflare.com/email-service/platform/limits/).
 
 ## Verification
 
 ```bash
 npm run check       # assets, generated bindings, strict TypeScript
 npm test            # Worker-runtime tests and official Resend SDK contract tests
+npm run test:stress # 50,000-contact pagination and Queue fan-out in the emulator
 npm run deploy:dry  # Wrangler bundle and binding validation
 npm audit --omit=dev
 ```

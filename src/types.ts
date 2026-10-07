@@ -1,5 +1,13 @@
 export type DeliveryQueueMessage = { deliveryId: string };
 
+export type BroadcastQueueMessage = {
+  type: "broadcast_fanout";
+  broadcastId: string;
+  afterContactId?: string;
+  createDeliveries: boolean;
+  queuedAt: string;
+};
+
 export type EmailEventMessage = {
   type: string;
   source?: { domain?: string };
@@ -15,7 +23,7 @@ export type EmailEventMessage = {
   };
 };
 
-export type QueueBody = DeliveryQueueMessage | EmailEventMessage;
+export type QueueBody = DeliveryQueueMessage | BroadcastQueueMessage | EmailEventMessage;
 
 export type SegmentRow = {
   id: string;
