@@ -68,6 +68,29 @@ The bypass cannot authenticate a non-local hostname or a production environment.
 
 Terraform owns only the Zero Trust Access application and policy. Wrangler owns the Worker, custom domains, and bindings. This separation prevents the two tools from changing the same Cloudflare resources.
 
+### Guided deployment
+
+For a new installation, run:
+
+```bash
+npm run deploy
+```
+
+The guided deploy performs a complete preflight before it changes Cloudflare resources. It:
+
+- verifies the active Wrangler account;
+- asks for the admin, API, sending-domain, and per-domain unsubscribe hostnames;
+- checks that every sending domain is already enabled in Cloudflare Email Sending without modifying domain onboarding;
+- opens Cloudflare's API-token page and requests a hidden, in-memory Access token when one is not already in `CLOUDFLARE_API_TOKEN`;
+- validates the token, Zero Trust organization, identity provider, application tests, and Terraform plan;
+- inventories D1 and Queues and displays the exact create/reuse plan;
+- waits for the user to type `DEPLOY` before making any Cloudflare changes;
+- creates missing D1 and Queue resources, applies Access, migrates D1, deploys the Worker and custom domains, creates missing Email Sending event subscriptions, and verifies the public endpoints.
+
+The Access token is never written to disk or printed. On macOS, install the supported Terraform-compatible runner once with `brew install opentofu`. On other platforms, install OpenTofu or Terraform and ensure `tofu` or `terraform` is on `PATH`.
+
+The manual procedure below remains available for debugging and infrastructure review.
+
 Before the first deployment, activate a Zero Trust plan for the Cloudflare account and configure Cloudflare as its account-member identity provider. New Zero Trust organizations include this identity provider by default. Terraform requires exactly one Cloudflare identity provider, restricts the application to it, and redirects authentication directly to it. The default policy admits members of the deploying Cloudflare account; set `allowed_account_id` to authorize members of a different account.
 
 ### Create the Terraform API token
@@ -155,13 +178,13 @@ export CLOUDFLARE_API_TOKEN="paste-token-here"
 
 7. For every sending domain, create an Email Sending event subscription targeting `cloudflare-resend-email-events`. Subscribe to delivered, deferred, bounced, failed, rejected, and complained events.
 
-8. Build and deploy. The deploy command regenerates `wrangler.deploy.jsonc` from Terraform outputs before invoking Wrangler:
+8. Build and deploy manually. These commands regenerate `wrangler.deploy.jsonc` from Terraform outputs before invoking Wrangler:
 
    ```bash
    npm run check
    npm test
    npm run deploy:dry
-   npm run deploy
+   npm run deploy:worker
    ```
 
 After signing into the admin hostname through Access, register each already-onboarded sending domain, add its sender identities, then create the first API key from the **API keys** page.

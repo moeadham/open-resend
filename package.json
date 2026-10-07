@@ -14,8 +14,8 @@
     "dev": "wrangler dev",
     "predeploy:dry": "npm run check",
     "deploy:dry": "npm run config:deploy && wrangler deploy --config wrangler.deploy.jsonc --dry-run",
-    "predeploy": "npm run check",
-    "deploy": "npm run config:deploy && wrangler deploy --config wrangler.deploy.jsonc"
+    "deploy": "node scripts/deploy.mjs",
+    "deploy:worker": "npm run config:deploy && wrangler deploy --config wrangler.deploy.jsonc"
   },
   "dependencies": {
     "@kiwa-ui/enhance": "^2.1.0",
