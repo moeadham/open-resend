@@ -1,4 +1,5 @@
 {
+  "accountId": "replace-with-cloudflare-account-id",
   "workerName": "cloudflare-resend",
   "adminHostname": "resend.example.com",
   "apiHostname": "mail-api.example.com",

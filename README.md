@@ -70,21 +70,30 @@ Terraform owns only the Zero Trust Access application and policy. Wrangler owns 
 
 ### Guided deployment
 
-For a new installation, run:
+For a new installation or a normal update, run:
 
 ```bash
 npm run deploy
 ```
 
-The guided deploy performs a complete preflight before it changes Cloudflare resources. It:
+The first run asks for deployment settings and saves them in `.deployment.json`. Later runs use that file without asking the setup questions, show the target and change plan, and ask only `Deploy this update? [y/N]`.
 
-- verifies the active Wrangler account;
-- asks for the admin, API, sending-domain, and per-domain unsubscribe hostnames;
+To edit saved deployment settings, or to deploy without the final confirmation, use:
+
+```bash
+npm run deploy -- --configure
+npm run deploy -- --yes
+```
+
+The deploy performs a complete preflight before it changes Cloudflare resources. It:
+
+- verifies the active Wrangler account against the account ID saved in `.deployment.json`;
+- asks for the admin, API, sending-domain, and per-domain unsubscribe hostnames only during first-time setup or with `--configure`;
 - checks that every sending domain is already enabled in Cloudflare Email Sending without modifying domain onboarding;
 - loads the Terraform API token from `CLOUDFLARE_API_TOKEN` or the local `.open-resend.secrets.json`, opening Cloudflare's official prefilled token template only when neither contains a token for the selected account;
 - validates the token, Zero Trust organization, identity provider, application tests, and Terraform plan;
 - inventories D1 and Queues and displays the exact create/reuse plan;
-- waits for the user to type `DEPLOY` before making any Cloudflare changes;
+- requires one final confirmation before making Cloudflare changes (`DEPLOY` during setup, `y/N` for updates), unless `--yes` is supplied;
 - creates missing D1 and Queue resources, applies Access, migrates D1, deploys the Worker and custom domains, creates missing Email Sending event subscriptions, and verifies the public endpoints with retries for DNS and TLS propagation. If verification is still pending, the script reports a non-fatal warning because the Cloudflare deployment itself is already complete.
 
 The template supplies the exact Access permissions and account restriction, so the deployer only reviews it, creates the token, and pastes the one-time value. After validation, the script stores prompted tokens by account ID in the git-ignored `.open-resend.secrets.json` with owner-only permissions (`0600`) and reuses them for later deploy and teardown runs. `CLOUDFLARE_API_TOKEN` takes precedence and is not persisted. The token is never printed. Delete `.open-resend.secrets.json` to forget all saved tokens, or revoke a token in Cloudflare. On macOS, install the supported Terraform-compatible runner once with `brew install opentofu`. On other platforms, install OpenTofu or Terraform and ensure `tofu` or `terraform` is on `PATH`.
@@ -174,6 +183,7 @@ export CLOUDFLARE_API_TOKEN="paste-token-here"
 
    ```json
    {
+     "accountId": "replace-with-cloudflare-account-id",
      "adminHostname": "resend.example.com",
      "apiHostname": "mail-api.example.com",
      "unsubscribeHostnames": {

@@ -25,6 +25,7 @@ const emailEvents = [
 let temporaryDirectory;
 const operationName = process.argv.includes("--teardown") ? "Teardown" : "Deployment";
 const assumeYes = process.argv.includes("-y") || process.argv.includes("--yes");
+const forceConfigure = process.argv.includes("--configure");
 
 try {
   if (process.argv.includes("--teardown")) await teardown();
@@ -51,9 +52,10 @@ async function teardown() {
   const deployment = readJsonIfPresent(deploymentPath);
   if (!deployment) fail(`No ${deploymentPath} exists, so teardown cannot safely identify this installation.`);
   const terraformVars = readTerraformVars(terraformVarsPath);
-  if (!terraformVars.account_id || !terraformVars.admin_hostname) {
-    fail(`Missing account_id or admin_hostname in ${terraformVarsPath}.`);
-  }
+  const accountId = deployment.accountId ?? terraformVars.account_id;
+  const adminHostname = deployment.adminHostname ?? terraformVars.admin_hostname;
+  if (!accountId || !adminHostname) fail(`Missing accountId or adminHostname in ${deploymentPath}.`);
+  writeTerraformVars({ accountId, adminHostname });
   const terraformStatePath = resolve(root, "infra/access/terraform.tfstate");
   if (!existsSync(terraformStatePath)) {
     fail("Terraform state is missing. Refusing to guess which Cloudflare Access resources belong to this installation.");
@@ -63,8 +65,8 @@ async function teardown() {
   if (!identity.loggedIn || !identity.accounts?.length) {
     fail("Wrangler is not logged in. Run `npx wrangler login`, then rerun this command.");
   }
-  const account = identity.accounts.find(({ id }) => id === terraformVars.account_id);
-  if (!account) fail(`Wrangler is not logged into the deployment account ${terraformVars.account_id}.`);
+  const account = identity.accounts.find(({ id }) => id === accountId);
+  if (!account) fail(`Wrangler is not logged into the deployment account ${accountId}.`);
   const cloudflareEnv = accountEnv(account.id);
 
   section("Inventorying recorded resources");
@@ -111,7 +113,7 @@ async function teardown() {
   console.log(`Account:              ${account.name} (${account.id})`);
   console.log(`Worker:               ${workerExists ? "delete" : "already absent"} ${deployment.workerName}`);
   for (const queueName of workerQueueConsumers) console.log(`Queue consumer:       remove ${deployment.workerName} from ${queueName} before Worker deletion`);
-  console.log(`Access:               destroy ${accessResources.length} Terraform-managed resource(s) for https://${terraformVars.admin_hostname}`);
+  console.log(`Access:               destroy ${accessResources.length} Terraform-managed resource(s) for https://${adminHostname}`);
   console.log(`Event subscriptions:  delete ${managedSubscriptions.length} Open Resend subscription(s)`);
   for (const name of queueNames) console.log(`Queue:                ${existingQueues.has(name) ? "delete" : "already absent"} ${name}`);
   console.log(`D1 and all its data:  ${database ? "DELETE PERMANENTLY" : "already absent"} ${deployment.d1DatabaseName} (${deployment.d1DatabaseId})`);
@@ -155,7 +157,7 @@ async function teardown() {
   }
 
   if (accessResources.length) {
-    const label = `Cloudflare Access configuration for https://${terraformVars.admin_hostname} (${accessResources.length} Terraform resource(s))`;
+    const label = `Cloudflare Access configuration for https://${adminHostname} (${accessResources.length} Terraform resource(s))`;
     if (workerRetained) {
       retain(retained, label, "the Worker still needs Access protection");
     } else if (await confirmDeletion(label)) {
@@ -230,23 +232,51 @@ async function main() {
     fail("Wrangler is not logged in. Run `npx wrangler login`, then rerun this command.");
   }
 
-  const account = await selectAccount(identity.accounts);
   const existingDeployment = readJsonIfPresent(deploymentPath);
   const existingTerraformVars = readTerraformVars(terraformVarsPath);
+  const configuredAccountId = existingDeployment?.accountId ?? existingTerraformVars.account_id;
+  const hasSavedConfiguration = isCompleteDeploymentConfig(existingDeployment, configuredAccountId);
+  const configure = forceConfigure || !hasSavedConfiguration;
+  if (!configure && !process.stdin.isTTY && !assumeYes) {
+    fail("Non-interactive deployment requires -y or --yes.");
+  }
+  if (configure && !process.stdin.isTTY) {
+    fail(`Deployment configuration is incomplete. Run \`npm run deploy${forceConfigure ? " -- --configure" : ""}\` in an interactive terminal first.`);
+  }
+
+  const account = configure
+    ? await selectAccount(identity.accounts, configuredAccountId)
+    : identity.accounts.find(({ id }) => id === configuredAccountId);
+  if (!account) fail(`Wrangler is not logged into the configured deployment account ${configuredAccountId}.`);
 
   console.log(`Cloudflare user: ${identity.email}`);
   console.log(`Cloudflare account: ${account.name} (${account.id})\n`);
 
-  const workerName = await ask("Worker name", existingDeployment?.workerName ?? "open-resend");
-  const adminHostname = normalizeHostname(await ask("Access-protected admin hostname", existingDeployment?.adminHostname ?? existingTerraformVars.admin_hostname ?? "resend.example.com"));
-  const apiHostname = normalizeHostname(await ask("Public API hostname", existingDeployment?.apiHostname ?? "mail-api.example.com"));
-  const existingDomains = Object.keys(existingDeployment?.unsubscribeHostnames ?? {});
-  const sendingDomains = parseDomains(await ask("Enabled Email Sending domains (comma-separated)", existingDomains.join(", ") || "example.com"));
-
-  const unsubscribeHostnames = {};
-  for (const domain of sendingDomains) {
-    const current = existingDeployment?.unsubscribeHostnames?.[domain] ?? `mail.${domain}`;
-    unsubscribeHostnames[domain] = normalizeHostname(await ask(`Unsubscribe hostname for ${domain}`, current));
+  let workerName;
+  let adminHostname;
+  let apiHostname;
+  let sendingDomains;
+  let unsubscribeHostnames;
+  if (configure) {
+    console.log(forceConfigure ? "Updating saved deployment configuration.\n" : "No complete deployment configuration was found. Starting first-time setup.\n");
+    workerName = await ask("Worker name", existingDeployment?.workerName ?? "open-resend");
+    adminHostname = normalizeHostname(await ask("Access-protected admin hostname", existingDeployment?.adminHostname ?? existingTerraformVars.admin_hostname ?? "resend.example.com"));
+    apiHostname = normalizeHostname(await ask("Public API hostname", existingDeployment?.apiHostname ?? "mail-api.example.com"));
+    const existingDomains = Object.keys(existingDeployment?.unsubscribeHostnames ?? {});
+    sendingDomains = parseDomains(await ask("Enabled Email Sending domains (comma-separated)", existingDomains.join(", ") || "example.com"));
+    unsubscribeHostnames = {};
+    for (const domain of sendingDomains) {
+      const current = existingDeployment?.unsubscribeHostnames?.[domain] ?? `mail.${domain}`;
+      unsubscribeHostnames[domain] = normalizeHostname(await ask(`Unsubscribe hostname for ${domain}`, current));
+    }
+  } else {
+    workerName = existingDeployment.workerName;
+    adminHostname = normalizeHostname(existingDeployment.adminHostname);
+    apiHostname = normalizeHostname(existingDeployment.apiHostname);
+    unsubscribeHostnames = Object.fromEntries(Object.entries(existingDeployment.unsubscribeHostnames)
+      .map(([domain, hostname]) => [normalizeHostname(domain), normalizeHostname(hostname)]));
+    sendingDomains = Object.keys(unsubscribeHostnames);
+    console.log(`Using saved configuration from ${deploymentPath}. Pass --configure to change it.\n`);
   }
 
   validateHostnames({ adminHostname, apiHostname, sendingDomains, unsubscribeHostnames });
@@ -297,7 +327,7 @@ async function main() {
   const token = await getTerraformToken(account);
   console.log("✓ Cloudflare API token is active");
 
-  writeFileSync(terraformVarsPath, terraformVars({ accountId: account.id, adminHostname }), { mode: 0o600 });
+  writeTerraformVars({ accountId: account.id, adminHostname });
 
   section("Validating Cloudflare Access plan");
   const terraformEnv = { ...process.env, CLOUDFLARE_API_TOKEN: token };
@@ -319,8 +349,23 @@ async function main() {
   console.log("Database:             apply all pending migrations");
   console.log("Email events:         create missing per-domain subscriptions");
 
-  const confirmation = await ask("Type DEPLOY to continue", "");
-  if (confirmation !== "DEPLOY") fail("Confirmation was not DEPLOY; no Cloudflare resources were changed.");
+  if (assumeYes) {
+    console.log("Deployment approved by -y/--yes.");
+  } else if (configure) {
+    const confirmation = await ask("Type DEPLOY to continue", "");
+    if (confirmation !== "DEPLOY") {
+      heading("Deployment cancelled");
+      console.log("No Cloudflare resources were changed.");
+      return;
+    }
+  } else {
+    const confirmation = (await ask("Deploy this update?", "N")).toLowerCase();
+    if (confirmation !== "y" && confirmation !== "yes") {
+      heading("Deployment cancelled");
+      console.log("No Cloudflare resources were changed.");
+      return;
+    }
+  }
 
   section("Creating missing resources");
   const database = existingDatabase ?? createDatabase(databaseName, account.id);
@@ -329,6 +374,7 @@ async function main() {
   }
 
   const deployment = {
+    accountId: account.id,
     workerName,
     adminHostname,
     apiHostname,
@@ -412,11 +458,12 @@ function jsonCommand(program, args, options = {}) {
   }
 }
 
-async function selectAccount(accounts) {
+async function selectAccount(accounts, preferredAccountId) {
   if (accounts.length === 1) return accounts[0];
   console.log("Available accounts:");
   for (const account of accounts) console.log(`- ${account.name}: ${account.id}`);
-  const selected = await ask("Cloudflare account ID", "");
+  const preferred = accounts.some(({ id }) => id === preferredAccountId) ? preferredAccountId : "";
+  const selected = await ask("Cloudflare account ID", preferred);
   const account = accounts.find(({ id }) => id === selected);
   if (!account) fail("The selected account ID is not available to the current Wrangler login.");
   return account;
@@ -722,6 +769,28 @@ function readTerraformVars(path) {
   if (!existsSync(path)) return {};
   const text = readFileSync(path, "utf8");
   return Object.fromEntries([...text.matchAll(/^([a-z_]+)\s*=\s*"([^"]*)"/gm)].map((match) => [match[1], match[2]]));
+}
+
+function isCompleteDeploymentConfig(deployment, accountId) {
+  if (!deployment || !/^[a-f0-9]{32}$/i.test(accountId ?? "")) return false;
+  const requiredStrings = [
+    deployment.workerName,
+    deployment.adminHostname,
+    deployment.apiHostname,
+    deployment.d1DatabaseName,
+    deployment.deliveryQueue,
+    deployment.deadLetterQueue,
+    deployment.emailEventsQueue,
+  ];
+  if (requiredStrings.some((value) => typeof value !== "string" || !value.trim())) return false;
+  if (!/^[a-f0-9-]{36}$/i.test(deployment.d1DatabaseId ?? "")) return false;
+  const unsubscribeEntries = Object.entries(deployment.unsubscribeHostnames ?? {});
+  return unsubscribeEntries.length > 0 && unsubscribeEntries.every(([domain, hostname]) => domain && typeof hostname === "string" && hostname);
+}
+
+function writeTerraformVars({ accountId, adminHostname }) {
+  writeFileSync(terraformVarsPath, terraformVars({ accountId, adminHostname }), { mode: 0o600 });
+  chmodSync(terraformVarsPath, 0o600);
 }
 
 function terraformVars({ accountId, adminHostname }) {
