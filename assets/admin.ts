@@ -23,8 +23,15 @@ for (const form of document.querySelectorAll<HTMLFormElement>("form[data-confirm
 }
 
 for (const form of document.querySelectorAll<HTMLFormElement>("form[data-schedule-form]")) {
+  const local = form.querySelector<HTMLInputElement>("[data-schedule-local]");
+  if (local) {
+    const earliest = new Date(Date.now() + 5 * 60 * 1000);
+    const localOffset = earliest.getTimezoneOffset() * 60_000;
+    local.min = new Date(earliest.getTime() - localOffset).toISOString().slice(0, 16);
+  }
+  const timezoneLabel = form.querySelector<HTMLElement>("[data-timezone-label]");
+  if (timezoneLabel) timezoneLabel.textContent = `Times shown in ${Intl.DateTimeFormat().resolvedOptions().timeZone}`;
   form.addEventListener("submit", () => {
-    const local = form.querySelector<HTMLInputElement>("[data-schedule-local]");
     const iso = form.querySelector<HTMLInputElement>("[name=scheduled_at]");
     if (local?.value && iso) iso.value = new Date(local.value).toISOString();
   });

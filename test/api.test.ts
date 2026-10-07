@@ -143,6 +143,8 @@ describe("Resend-compatible API", () => {
       env.DB.prepare("INSERT INTO domains (id,name,created_at) VALUES ('domain-admin','example.com',?)").bind(now),
       env.DB.prepare("INSERT INTO senders (id,domain_id,email,name,postal_address,active,created_at,updated_at) VALUES ('sender-admin','domain-admin','news@example.com','Example News','1 Main Street',1,?,?)").bind(now, now),
       env.DB.prepare("INSERT INTO segments (id,name,created_at,updated_at) VALUES ('segment-broadcast','Readers',?,?)").bind(now, now),
+      env.DB.prepare("INSERT INTO contacts (id,email,created_at,updated_at) VALUES ('contact-broadcast','reader@example.net',?,?)").bind(now, now),
+      env.DB.prepare("INSERT INTO segment_contacts (segment_id,contact_id,status,subscribed_at,updated_at) VALUES ('segment-broadcast','contact-broadcast','subscribed',?,?)").bind(now, now),
       env.DB.prepare("INSERT INTO broadcasts (id,name,segment_id,sender_id,from_value,subject,html,text,status,created_at,updated_at) VALUES ('broadcast-admin','Draft update','segment-broadcast','sender-admin','Example News <news@example.com>','Hello','<p>Hello</p>','Hello','draft',?,?)").bind(now, now),
     ]);
     const token = await accessToken("replace-with-access-application-aud", "5 minutes");
@@ -151,6 +153,12 @@ describe("Resend-compatible API", () => {
     const html = await response.text();
     expect(html).toContain("Send now");
     expect(html).toContain("Edit");
+    expect(html).toContain("Ready to send?");
+    expect(html).toContain("1 eligible recipient");
+    expect(html).toContain("Unsubscribe handled automatically");
+    expect(html).toContain("Schedule broadcast");
+    expect(html).toContain("Send yourself a preview");
+    expect(html).toContain('id="send-broadcast"');
     expect(html).not.toContain("Retry failures");
 
     await env.DB.batch([
