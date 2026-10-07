@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:assets": "esbuild assets/admin.ts assets/admin.css --bundle --minify --outdir=dist-assets/assets",
+    "build:assets": "esbuild assets/admin.ts --bundle --minify --outfile=dist-assets/assets/admin.js && tailwindcss -i assets/admin.css -o dist-assets/assets/admin.css --minify",
     "check": "npm run build:assets && npm run types && tsc --noEmit && npm run check:deployment",
     "types": "wrangler types",
     "config:deploy": "node scripts/render-wrangler.mjs",
@@ -19,17 +19,22 @@
   },
   "dependencies": {
     "@kiwa-ui/enhance": "^2.1.0",
+    "clsx": "^2.1.1",
     "hono": "^4.13.13",
     "jose": "^6.2.12",
+    "lucide": "^1.52.0",
     "mimetext": "^3.0.28",
-    "quill": "2.0.2"
+    "quill": "2.0.2",
+    "tailwind-merge": "^3.7.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.8.30",
     "@cloudflare/workers-types": "^5.20261006.1",
+    "@tailwindcss/cli": "^4.3.3",
     "@types/node": "^26.6.4",
     "esbuild": "^0.28.1",
     "resend": "6.32.0",
+    "tailwindcss": "^4.3.3",
     "typescript": "^5.9.3",
     "vitest": "3.1.4",
     "wrangler": "^4.147.0"
