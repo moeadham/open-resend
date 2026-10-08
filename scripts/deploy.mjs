@@ -409,8 +409,11 @@ async function main() {
 
   section("Rendering and deploying Worker configuration");
   command(process.execPath, ["scripts/render-wrangler.mjs"], { env: { ...process.env, TERRAFORM_BIN: terraform } });
-  command("npx", ["--no-install", "wrangler", "d1", "migrations", "apply", "DB", "--remote", "--config", "wrangler.deploy.jsonc"], {
+  await commandWithRetry("npx", ["--no-install", "wrangler", "d1", "migrations", "apply", "DB", "--remote", "--config", "wrangler.deploy.jsonc"], {
     env: { ...accountEnv(account.id), CI: "true" },
+    attempts: 3,
+    retryDelayMs: 2_000,
+    shouldRetry: (output) => output.includes("code: 7403") || output.includes("not valid or is not authorized"),
   });
   command("npm", ["run", "build:assets"]);
   command("npx", ["--no-install", "wrangler", "deploy", "--config", "wrangler.deploy.jsonc"], { env: accountEnv(account.id) });
@@ -462,6 +465,31 @@ function command(program, args, options = {}) {
   if (result.error) fail(`${program} could not start: ${result.error.message}`);
   if (result.status !== 0) fail(`${program} ${args.join(" ")} exited with status ${result.status}.`);
   return stripAnsi(stdout);
+}
+
+async function commandWithRetry(program, args, options = {}) {
+  const attempts = options.attempts ?? 1;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const result = spawnSync(program, args, {
+      cwd: root,
+      env: options.env ?? process.env,
+      encoding: "utf8",
+      stdio: ["inherit", "pipe", "pipe"],
+    });
+    const stdout = result.stdout ?? "";
+    const stderr = result.stderr ?? "";
+    if (stdout) process.stdout.write(stdout);
+    if (stderr) process.stderr.write(stderr);
+    if (result.error) fail(`${program} could not start: ${result.error.message}`);
+    if (result.status === 0) return stripAnsi(stdout);
+
+    const output = stripAnsi(`${stdout}\n${stderr}`);
+    const retryable = attempt < attempts && options.shouldRetry?.(output);
+    if (!retryable) fail(`${program} ${args.join(" ")} exited with status ${result.status}.`);
+    const retryDelayMs = options.retryDelayMs ?? 1_000;
+    console.log(`Cloudflare temporarily rejected the D1 request; retrying in ${retryDelayMs / 1_000}s (${attempt}/${attempts - 1})...`);
+    await delay(retryDelayMs);
+  }
 }
 
 function commandWithInput(program, args, input, options = {}) {
