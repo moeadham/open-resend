@@ -15,8 +15,10 @@ const tokenPermissions = [
 ];
 const emailDiscoveryPermissions = [
   // Cloudflare registers email_sending:read but does not currently grant it.
-  // Wrangler uses email_sending:write for the same discovery endpoints.
+  // Wrangler uses email_sending:write for the same discovery endpoints. Zone
+  // Read is also required by the zone inventory and subdomain endpoints.
   { key: "email_sending", type: "edit" },
+  { key: "zone", type: "read" },
 ];
 const emailEvents = [
   "message.delivered",
@@ -540,9 +542,9 @@ async function requestTerraformToken(account) {
 async function requestEmailDiscoveryToken(account) {
   const tokenUrl = apiTokenTemplateUrl(account.id, emailDiscoveryPermissions, "Open Resend Email Sending discovery");
   console.log("\nA second Cloudflare API token lets the deployed Worker sync enabled Email Sending domains.");
-  console.log("Cloudflare does not currently grant the Email Sending Read scope, so this token uses Email Sending Edit and is restricted to this account.");
+  console.log("Cloudflare does not currently grant the Email Sending Read scope, so this token uses Email Sending Edit plus Zone Read and is restricted to this account.");
   console.log(`Opening a prefilled token for ${account.name}.`);
-  console.log("Review the Email Sending Edit permission and account restriction, create the token, and copy its one-time value.");
+  console.log("Review the Email Sending Edit, Zone Read, and account restriction settings, create the token, and copy its one-time value.");
   console.log(`If the browser does not open, use:\n${tokenUrl}\n`);
   openUrl(tokenUrl);
   return secretQuestion("Paste the Email Sending token (input is hidden): ");
@@ -682,7 +684,7 @@ async function cloudflarePages(path, token) {
     const body = await response.json().catch(() => ({}));
     if (!response.ok || !body.success || !Array.isArray(body.result)) {
       const detail = body.errors?.map((error) => error.message).filter(Boolean).join("; ");
-      fail(`The Email Sending token could not read Cloudflare${detail ? `: ${detail}` : "."} Make sure it uses Email Sending Edit; Cloudflare currently does not grant the read-only scope.`);
+      fail(`The Email Sending token could not read Cloudflare${detail ? `: ${detail}` : "."} Make sure it uses Email Sending Edit and Zone Read; Cloudflare currently does not grant the Email Sending read-only scope.`);
     }
     results.push(...body.result);
     if (page >= Number(body.result_info?.total_pages ?? 1)) return results;
