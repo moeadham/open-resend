@@ -1,0 +1,1 @@
+export const EMAIL_IMAGE_ROW_CSS = "@media only screen and (max-width:520px){.email-image-row .email-image-cell{display:block!important;width:100%!important;box-sizing:border-box!important;padding:0 0 12px!important}}";

@@ -101,6 +101,24 @@ The deploy performs a complete preflight before it changes Cloudflare resources.
 
 The script opens two prefilled token templates: a deployment token for Access and a separate, account-restricted token with Email Sending Edit and Zone Read for runtime domain sync. Cloudflare currently registers but does not grant the Email Sending Read scope, so the second token must use Email Sending Edit even though Open Re-send only performs read requests with it. Zone Read is required to discover the account's sending zones and query their enabled sending domains. After validation, the script stores prompted tokens by account ID in the git-ignored `.open-resend.secrets.json` with owner-only permissions (`0600`) and reuses them for later deploys. `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_EMAIL_DISCOVERY_TOKEN` take precedence and are not persisted. Tokens are never printed. Delete `.open-resend.secrets.json` to forget all saved tokens, or revoke either token in Cloudflare. On macOS, install the supported Terraform-compatible runner once with `brew install opentofu`. On other platforms, install OpenTofu or Terraform and ensure `tofu` or `terraform` is on `PATH`.
 
+### Optional email images
+
+Click an image in the editor to resize it: drag the blue bottom-right handle, choose a width preset, or enter an exact pixel width. The handle also supports arrow keys. Widths are saved with the email; images retain their proportions and shrink to fit smaller screens.
+
+To place two images beside each other, insert them in adjacent image-only paragraphs, select either image, and choose **Side by side**. Blank lines between them are allowed; intervening text is never moved. **Stack images** separates them again. Saved rows use presentation tables and stack on narrow screens in email clients that support media queries. The text toolbar also offers Left, Center, Right, and **Justify (full width)** alignment; alignment is saved as inline email styling.
+
+The broadcast editor's **Insert image** button uploads PNG, JPEG, GIF, and WebP files (up to Cloudflare Images' 10 MB limit) to your account's Cloudflare Images storage and inserts the public delivery URL. Pasting or dropping image files uses the same upload flow. Upload progress and prominent errors appear directly below the editor toolbar. Alt text is optional, and images scale to fit mobile emails. No attachments or inline base64 images are generated.
+
+If your account already has Images storage enabled, configure uploads with:
+
+```bash
+npm run deploy -- --configure-images
+```
+
+This opens an account-restricted **Cloudflare Images Edit** token template, checks access to Images, saves the token under `imagesTokens[accountId]` in the git-ignored `.open-resend.secrets.json` (`0600`), and installs the encrypted Worker secret `CLOUDFLARE_IMAGES_TOKEN`. Alternatively, provide `CLOUDFLARE_IMAGES_TOKEN` in your environment; environment tokens are not saved locally. Subsequent deploys reuse the saved token without another interview. The deploy script never enables an Images subscription or billing. Without a token, the editor explains that uploads need setup; the rest of the application works normally.
+
+Uploaded images are public and use non-expiring URLs. Removing an image from a draft, deleting a broadcast, or tearing down Open Re-send does **not** delete it from Cloudflare Images, because delivered emails may still reference it. Manage these images in Cloudflare Images; deleting them there breaks those references. Normal redeploys preserve existing Worker secrets; to disable uploads, remove `CLOUDFLARE_IMAGES_TOKEN` from the Worker and remove the corresponding saved/environment token.
+
 The manual procedure below remains available for debugging and infrastructure review.
 
 ### Tear down an installation

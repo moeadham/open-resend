@@ -339,6 +339,7 @@ async function main() {
   const token = await getTerraformToken(account);
   console.log("✓ Cloudflare deployment token is active");
   const emailDiscoveryToken = await getEmailDiscoveryToken(account);
+  const imagesToken = await getImagesToken(account);
   const discoveredDomains = await verifyEmailDiscoveryToken(emailDiscoveryToken, account.id);
   console.log(`✓ Cloudflare Email Sending token can read ${discoveredDomains.length} enabled domain${discoveredDomains.length === 1 ? "" : "s"}`);
 
@@ -362,6 +363,7 @@ async function main() {
   for (const name of Object.values(queueNames)) console.log(`Queue:                ${existingQueues.has(name) ? "reuse" : "create"} ${name}`);
   console.log("Access:               apply the validated Terraform plan");
   console.log("Worker secret:        install scoped Email Sending token");
+  console.log(`Image uploads:        ${imagesToken ? "install scoped Images token" : "not configured (existing Worker secrets are preserved)"}`);
   console.log("Database:             apply all pending migrations");
   console.log("Email events:         create missing per-domain subscriptions");
 
@@ -420,6 +422,10 @@ async function main() {
 
   section("Installing Worker discovery secret");
   commandWithInput("npx", ["--no-install", "wrangler", "secret", "put", "CLOUDFLARE_EMAIL_DISCOVERY_TOKEN", "--config", "wrangler.deploy.jsonc"], `${emailDiscoveryToken}\n`, { env: accountEnv(account.id) });
+  if (imagesToken) {
+    section("Installing optional Cloudflare Images secret");
+    commandWithInput("npx", ["--no-install", "wrangler", "secret", "put", "CLOUDFLARE_IMAGES_TOKEN", "--config", "wrangler.deploy.jsonc"], `${imagesToken}\n`, { env: accountEnv(account.id) });
+  }
 
   section("Configuring Email Sending events");
   await ensureEmailEventSubscriptions({ accountId: account.id, domains: sendingDomains, enabledDomains, queue: queueNames.emailEvents });
@@ -641,6 +647,40 @@ async function getEmailDiscoveryToken(account) {
   chmodSync(secretsPath, 0o600);
   console.log(`✓ Saved Email Sending token to ${secretsPath} (mode 0600)`);
   return token;
+}
+
+async function getImagesToken(account) {
+  const secrets = readJsonIfPresent(secretsPath) ?? {};
+  let token = process.env.CLOUDFLARE_IMAGES_TOKEN ?? secrets.imagesTokens?.[account.id];
+  if (process.argv.includes("--configure-images")) {
+    if (!process.stdin.isTTY) fail("Run --configure-images interactively, or supply CLOUDFLARE_IMAGES_TOKEN without that flag.");
+    console.log("\nOptional image uploads require existing Cloudflare Images storage. This does not enable a subscription or billing.");
+    if ((await ask("Configure Cloudflare Images uploads?", "N")).toLowerCase().startsWith("y")) {
+      const url = apiTokenTemplateUrl(account.id, [{ key: "images", type: "edit" }], "Open Resend image uploads");
+      console.log(`Create an account-restricted token with Cloudflare Images Edit:\n${url}`);
+      openUrl(url);
+      token = await secretQuestion("Paste the Images token (input is hidden): ");
+      await verifyImagesToken(token, account.id);
+      writeFileSync(secretsPath, `${JSON.stringify({ ...secrets, imagesTokens: { ...secrets.imagesTokens, [account.id]: token } }, null, 2)}\n`, { mode: 0o600 });
+      chmodSync(secretsPath, 0o600);
+      console.log(`✓ Saved Images token to ${secretsPath} (mode 0600)`);
+      return token;
+    }
+  }
+  if (token) {
+    await verifyImagesToken(token, account.id);
+    console.log("✓ Cloudflare Images is available; image uploads will be enabled");
+  } else console.log("• Optional Images token not configured; image uploads remain unavailable");
+  return token;
+}
+
+async function verifyImagesToken(token, accountId) {
+  await verifyToken(token);
+  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/images/v1/stats`, {
+    headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000),
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok || !body?.success) fail("Cloudflare Images is unavailable. Enable Images storage on this account and grant the token Cloudflare Images Edit permission.");
 }
 
 function apiTokenTemplateUrl(accountId, permissions, name) {

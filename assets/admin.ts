@@ -1,20 +1,125 @@
 import Quill from "quill";
 import { combobox } from "@kiwa-ui/enhance/combobox";
 import { datePicker } from "@kiwa-ui/enhance/date-picker";
+import { IMAGE_SIZE_ERROR, MAX_IMAGE_BYTES } from "../src/image-policy";
+import { enableImageResize } from "./image-resize";
+import { registerImageRows, restoreImageRows, serializeImageRows } from "./image-layout";
+
+registerImageRows();
 
 const editor = document.querySelector<HTMLElement>("[data-rich-editor]");
 const input = document.querySelector<HTMLTextAreaElement>("#html-input");
 if (editor && input) {
-  const quill = new Quill(editor, { theme: "snow", placeholder: "Start writing your email…", modules: { toolbar: [[{ header: [1, 2, 3, false] }], ["bold", "italic", "underline", "link"], [{ list: "ordered" }, { list: "bullet" }], ["blockquote", "code-block"], ["clean"]] } });
+  let uploading = false;
+  const status = document.createElement("div");
+  status.className = "editor-upload-status";
+  status.setAttribute("role", "status");
+  status.hidden = true;
+  function showUploadStatus(message: string, error = false) {
+    status.replaceChildren();
+    status.hidden = !message;
+    status.dataset.error = String(error);
+    status.setAttribute("role", error ? "alert" : "status");
+    status.setAttribute("aria-live", error ? "assertive" : "polite");
+    if (error) {
+      const title = document.createElement("strong");
+      title.textContent = "Image upload failed";
+      status.append(title);
+    }
+    const description = document.createElement("span");
+    description.textContent = message;
+    status.append(description);
+    if (error) {
+      status.tabIndex = -1;
+      status.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      status.focus({ preventScroll: true });
+    }
+  }
+  const quill = new Quill(editor, { theme: "snow", placeholder: "Start writing your email…", modules: {
+    toolbar: { container: [[{ header: [1, 2, 3, false] }], ["bold", "italic", "underline", "link", "image"], [{ align: [false, "center", "right", "justify"] }], [{ list: "ordered" }, { list: "bullet" }], ["blockquote", "code-block"], ["clean"]], handlers: {
+      image: () => {
+        const range = quill.getSelection(true);
+        const picker = document.createElement("input");
+        picker.type = "file";
+        picker.accept = "image/png,image/jpeg,image/gif,image/webp";
+        picker.onchange = () => { if (picker.files?.length) void uploadImages(range, Array.from(picker.files)); };
+        picker.click();
+      },
+    } },
+    uploader: { mimetypes: ["image/png", "image/jpeg", "image/gif", "image/webp"], handler: (range: { index: number; length: number }, files: File[]) => { void uploadImages(range, files); } },
+  } });
+  // Immediately below Quill's toolbar, not beneath the entire email body.
+  editor.before(status);
+  enableImageResize(quill, editor);
+  restoreImageRows(quill);
+  const alignment = editor.parentElement?.querySelector(".ql-align");
+  alignment?.querySelector(".ql-picker-label")?.setAttribute("aria-label", "Text alignment");
+  alignment?.querySelectorAll<HTMLElement>(".ql-picker-item").forEach((item) => {
+    const name = item.dataset.value === "justify" ? "Justify (full width)" : item.dataset.value === "center" ? "Center" : item.dataset.value === "right" ? "Right" : "Left";
+    item.title = name; item.setAttribute("aria-label", name);
+  });
+  const imageButton = editor.parentElement?.querySelector<HTMLButtonElement>(".ql-image");
+  if (imageButton) { imageButton.title = "Insert image"; imageButton.setAttribute("aria-label", "Insert image"); }
+  void fetch("/editor/images").then(async (response) => {
+    const result = await response.json();
+    if (!result.enabled && !uploading && status.hidden) showUploadStatus("Image uploads need Cloudflare Images. Run npm run deploy -- --configure-images to enable them.");
+  }).catch(() => { if (!uploading && status.hidden) showUploadStatus("Could not check image upload availability. Try inserting an image to retry."); });
+  async function uploadImages(range: { index: number; length: number }, files: File[]) {
+    if (uploading) return;
+    uploading = true;
+    const saveButtons = editor!.closest("form")?.querySelectorAll<HTMLButtonElement>('button:not([type]),button[type="submit"]');
+    saveButtons?.forEach((button) => { button.disabled = true; });
+    try {
+      let index = Math.min(range.index, quill.getLength() - 1);
+      for (const file of files) {
+        if (file.size > MAX_IMAGE_BYTES) throw new Error(`${file.name} (${(file.size / (1024 * 1024)).toFixed(1)} MB): ${IMAGE_SIZE_ERROR}`);
+        const alt = window.prompt("Image description (alt text, optional):", "");
+        if (alt === null) continue;
+        showUploadStatus(`Uploading ${file.name}…`);
+        const form = new FormData(); form.set("file", file);
+        const response = await fetch("/editor/images", { method: "POST", body: form });
+        const result = await response.json().catch(() => null);
+        if (!response.ok || !result?.url) throw new Error(result?.message ?? "Image upload failed. Please try again.");
+        index = Math.min(index, quill.getLength() - 1);
+        quill.insertEmbed(index, "image", result.url, "user");
+        if (alt) quill.formatText(index, 1, "alt", alt, "user");
+        index += 1;
+        quill.setSelection(index, 0, "silent");
+      }
+      showUploadStatus("");
+    } catch (error) { showUploadStatus(error instanceof Error ? error.message : "Please try again.", true); }
+    finally { uploading = false; saveButtons?.forEach((button) => { button.disabled = false; }); }
+  }
+  // Never retain Quill's default inline base64 images from pasted HTML.
+  quill.clipboard.addMatcher("IMG", (node, delta) => {
+    const src = (node as HTMLImageElement).getAttribute("src") ?? "";
+    if (!src.startsWith("https://")) {
+      showUploadStatus("Use Insert image or paste an image file to upload it. Inline images are not supported.", true);
+      return delta.slice(0, 0);
+    }
+    return delta;
+  });
   if (input.value.trim()) quill.clipboard.dangerouslyPasteHTML(input.value);
   editor.closest("form")?.addEventListener("submit", (event) => {
-    if (!quill.getText().trim()) {
+    if (uploading || (!quill.getText().trim() && !quill.root.querySelector("img"))) {
       event.preventDefault();
       quill.focus();
       window.alert("Write some email content before saving.");
       return;
     }
-    input.value = quill.getSemanticHTML();
+    const content = document.createElement("template");
+    content.innerHTML = quill.getSemanticHTML();
+    content.content.querySelectorAll("img").forEach((image) => {
+      image.style.maxWidth = "100%"; image.style.height = "auto"; image.style.display = "block";
+      const width = Number(image.getAttribute("width"));
+      if (Number.isFinite(width) && width > 0) image.style.width = `${width}px`;
+      if (!image.hasAttribute("alt")) image.setAttribute("alt", "");
+    });
+    for (const align of ["center", "right", "justify"] as const) {
+      content.content.querySelectorAll<HTMLElement>(`.ql-align-${align}`).forEach((element) => { element.style.textAlign = align; });
+    }
+    serializeImageRows(content.content);
+    input.value = content.innerHTML;
   });
 }
 

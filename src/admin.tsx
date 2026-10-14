@@ -8,6 +8,8 @@ import { DatePicker } from "./ui/date-picker";
 import { Button } from "./ui/button";
 import { AddIcon, AudienceIcon, BroadcastIcon, CalendarIcon, CheckIcon, CloseIcon, CopyIcon, DomainIcon, EditIcon, EllipsisIcon, EyeIcon, EyeOffIcon, InfoIcon, KeyIcon, SearchIcon } from "./ui/icon";
 import { syncSendingDomains } from "./cloudflare";
+import { imagesApp } from "./images";
+import { EMAIL_IMAGE_ROW_CSS } from "./email-layout";
 import type { DomainRow } from "./types";
 
 type Bindings = { Bindings: Env };
@@ -22,6 +24,7 @@ adminApp.onError((error, c) => {
 });
 adminApp.use("*", requireAccess);
 adminApp.use("*", requireSameOrigin);
+adminApp.route("/editor/images", imagesApp);
 adminApp.get("/assets/*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
 adminApp.get("/", (c) => c.redirect("/broadcasts", 302));
@@ -526,7 +529,7 @@ async function adminBroadcastFields(c: AdminContext, form: Record<string, string
   return { name: textField(form.name, "name", 200), segmentId, topicId, sender, subject: textField(form.subject, "subject", 998), previewText: String(form.preview_text ?? "").trim() || null, html: textField(form.html, "html", 1_000_000) };
 }
 function broadcastPreviewDocument(html: string | null, text: string | null, companyName: string, postalAddress: string): string {
-  const content = html ?? `<p>${escapeHtml(text ?? "")}</p>`;
+  const content = `<style>${EMAIL_IMAGE_ROW_CSS}</style>${html ?? `<p>${escapeHtml(text ?? "")}</p>`}`;
   const postal = escapeHtml(normalizeLineEndings(postalAddress)).replaceAll("\n", "<br>");
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html{background:#f2f3f5}body{box-sizing:border-box;max-width:640px;min-height:100vh;margin:0 auto;padding:44px 36px;background:#fff;color:#171717;font:16px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}img{max-width:100%;height:auto}a{color:#0670db}footer{margin-top:48px;padding:24px 16px 0;border-top:1px solid #e5e7eb;text-align:center;color:#6b7280;font-size:12px;line-height:1.6}footer strong,footer span{display:block}footer strong{margin-bottom:4px;color:#4b5563}footer a{display:inline-block;margin-top:12px;text-decoration:underline}@media(max-width:520px){body{padding:28px 20px}}</style></head><body><main>${content}</main><footer><strong>${escapeHtml(companyName)}</strong><span>${postal}</span><a href="#" onclick="return false">Unsubscribe</a></footer></body></html>`;
 }

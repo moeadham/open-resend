@@ -1,5 +1,6 @@
 import { EmailMessage } from "cloudflare:email";
 import { createMimeMessage, Mailbox } from "mimetext/browser";
+import { EMAIL_IMAGE_ROW_CSS } from "./email-layout";
 import { AppError, escapeHtml, logError, normalizeLineEndings, nowIso, randomToken, sha256, stripHtml, unsubscribeBaseUrl } from "./lib";
 import type { BroadcastQueueMessage, BroadcastRow, DeliveryDetail, DeliveryQueueMessage, EmailEventMessage } from "./types";
 
@@ -251,7 +252,7 @@ export function buildCampaignMime(detail: DeliveryDetail, unsubscribeUrl: string
   const preview = detail.preview_text
     ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0">${escapeHtml(detail.preview_text)}</div>`
     : "";
-  const html = `${preview}${detail.html ?? `<p>${escapeHtml(detail.text ?? "")}</p>`}${htmlFooter}`;
+  const html = campaignHtmlDocument(detail.html ?? `<p>${escapeHtml(detail.text ?? "").replace(/\r\n?|\n/g, "<br>")}</p>`, htmlFooter, preview);
   const text = `${detail.text ?? stripHtml(detail.html ?? "")}${textFooter}`;
 
   const mime = createMimeMessage();
@@ -262,8 +263,8 @@ export function buildCampaignMime(detail: DeliveryDetail, unsubscribeUrl: string
   mime.setHeader("List-Unsubscribe", `<${unsubscribeUrl}>`);
   mime.setHeader("List-Unsubscribe-Post", "List-Unsubscribe=One-Click");
   mime.setHeader("X-Campaign-ID", detail.broadcast_id);
-  mime.addMessage({ contentType: "text/plain", data: text });
-  mime.addMessage({ contentType: "text/html", data: html });
+  addEncodedMessage(mime, "text/plain", text);
+  addEncodedMessage(mime, "text/html", html);
   return normalizeMimeLineEndings(mime.asRaw());
 }
 
@@ -389,6 +390,12 @@ export async function sendTestEmail(
   env: Env,
   input: { to: string; sender: { email: string; name: string; company_name: string | null; reply_to: string | null; postal_address: string; domain: string }; subject: string; html: string; text?: string | null },
 ): Promise<string> {
+  const raw = buildTestMime(env, input);
+  const result = await env.EMAIL.send(new EmailMessage(input.sender.email, input.to, raw));
+  return result.messageId;
+}
+
+export function buildTestMime(env: Pick<Env, "UNSUBSCRIBE_HOSTNAMES">, input: Parameters<typeof sendTestEmail>[1]): string {
   const unsubscribeUrl = `${unsubscribeBaseUrl(env.UNSUBSCRIBE_HOSTNAMES, input.sender.domain)}/unsubscribe/test`;
   const mime = createMimeMessage();
   mime.setSender({ name: input.sender.name, addr: input.sender.email });
@@ -396,16 +403,23 @@ export async function sendTestEmail(
   mime.setSubject(`[TEST] ${input.subject}`);
   if (input.sender.reply_to) mime.setHeader("Reply-To", new Mailbox(input.sender.reply_to));
   mime.setHeader("X-Campaign-Test", "true");
-  mime.addMessage({
-    contentType: "text/plain",
-    data: `${input.text ?? stripHtml(input.html)}${campaignTextFooter(input.sender.company_name ?? input.sender.name, input.sender.postal_address, unsubscribeUrl, "Unsubscribe preview")}`,
-  });
-  mime.addMessage({
-    contentType: "text/html",
-    data: `${input.html}${campaignHtmlFooter(input.sender.company_name ?? input.sender.name, input.sender.postal_address, unsubscribeUrl, "Unsubscribe preview")}`,
-  });
-  const result = await env.EMAIL.send(new EmailMessage(input.sender.email, input.to, normalizeMimeLineEndings(mime.asRaw())));
-  return result.messageId;
+  addEncodedMessage(mime, "text/plain", `${input.text ?? stripHtml(input.html)}${campaignTextFooter(input.sender.company_name ?? input.sender.name, input.sender.postal_address, unsubscribeUrl, "Unsubscribe preview")}`);
+  addEncodedMessage(mime, "text/html", campaignHtmlDocument(input.html, campaignHtmlFooter(input.sender.company_name ?? input.sender.name, input.sender.postal_address, unsubscribeUrl, "Unsubscribe preview")));
+  return normalizeMimeLineEndings(mime.asRaw());
+}
+
+function addEncodedMessage(mime: ReturnType<typeof createMimeMessage>, contentType: "text/plain" | "text/html", content: string): void {
+  // mimetext sets the encoding header but expects already-encoded payloads.
+  const encoded = mime.envctx.toBase64(normalizeMimeLineEndings(content));
+  mime.addMessage({ contentType, encoding: "base64", data: encoded.match(/.{1,76}/g)?.join("\r\n") ?? "" });
+}
+
+function campaignHtmlDocument(content: string, footer: string, preview = ""): string {
+  // Preserve imported templates rather than nesting another document around them.
+  if (/<html\b/i.test(content)) {
+    return content.replace(/<\/head\s*>/i, () => `<style>${EMAIL_IMAGE_ROW_CSS}</style></head>`).replace(/<body\b[^>]*>/i, (opening) => `${opening}${preview}`).replace(/<\/body\s*>/i, () => `${footer}</body>`);
+  }
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="x-apple-disable-message-reformatting"><style>${EMAIL_IMAGE_ROW_CSS}</style><title></title></head><body style="margin:0;padding:0;background:#ffffff;color:#111827;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:1.6">${preview}<div style="box-sizing:border-box;width:100%;max-width:600px;margin:0 auto;padding:32px 20px;overflow-wrap:break-word">${content}${footer}</div></body></html>`;
 }
 
 function campaignHtmlFooter(companyName: string, postalAddress: string, unsubscribeUrl: string, linkLabel: string): string {
