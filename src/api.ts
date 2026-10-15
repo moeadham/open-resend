@@ -1,6 +1,7 @@
 import { Hono, type Context, type Next } from "hono";
 import { requireApiKey } from "./auth";
 import { enqueueBroadcast } from "./delivery";
+import { attributeUnsubscribe } from "./unsubscribe-attribution";
 import {
   AppError,
   appErrorResponse,
@@ -82,10 +83,11 @@ apiApp.post("/unsubscribe/:token", async (c) => {
   if (context.topic_id && form.get("preference_form") === "1") {
     const visible = await preferenceTopics(c.env.DB, context.contact_id, context.topic_id);
     const selected = new Set(form.getAll("topic").map(String));
-    await c.env.DB.batch(visible.map((topic) => c.env.DB.prepare(
+    const attribution = selected.has(context.topic_id) ? [] : attributeUnsubscribe(c.env.DB, context, "topic", now);
+    await c.env.DB.batch([...attribution, ...visible.map((topic) => c.env.DB.prepare(
       `INSERT INTO contact_topics (topic_id,contact_id,subscription,updated_at) VALUES (?,?,?,?)
        ON CONFLICT(topic_id,contact_id) DO UPDATE SET subscription=excluded.subscription,updated_at=excluded.updated_at`,
-    ).bind(topic.id, context.contact_id, selected.has(topic.id) ? "opt_in" : "opt_out", now)));
+    ).bind(topic.id, context.contact_id, selected.has(topic.id) ? "opt_in" : "opt_out", now))]);
     return c.html(unsubscribePage({
       title: "Your preferences were updated",
       description: `Your email choices for ${context.email} have been saved.`,
@@ -94,10 +96,10 @@ apiApp.post("/unsubscribe/:token", async (c) => {
     }));
   }
   if (context.topic_id && form.get("unsubscribe_all") !== "1") {
-    await c.env.DB.prepare(
+    await c.env.DB.batch([...attributeUnsubscribe(c.env.DB, context, "topic", now), c.env.DB.prepare(
       `INSERT INTO contact_topics (topic_id,contact_id,subscription,updated_at) VALUES (?,?,'opt_out',?)
        ON CONFLICT(topic_id,contact_id) DO UPDATE SET subscription='opt_out',updated_at=excluded.updated_at`,
-    ).bind(context.topic_id, context.contact_id, now).run();
+    ).bind(context.topic_id, context.contact_id, now)]);
     return c.html(unsubscribePage({
       title: `You’re unsubscribed from ${context.topic_name}`,
       description: `You will no longer receive this type of email at ${context.email}.`,
@@ -105,8 +107,8 @@ apiApp.post("/unsubscribe/:token", async (c) => {
       state: "success",
     }));
   }
-  await c.env.DB.prepare("UPDATE contacts SET unsubscribed=1,updated_at=? WHERE id=?")
-    .bind(now, context.contact_id).run();
+  await c.env.DB.batch([...attributeUnsubscribe(c.env.DB, context, "global", now),
+    c.env.DB.prepare("UPDATE contacts SET unsubscribed=1,updated_at=? WHERE id=?").bind(now, context.contact_id)]);
   return c.html(unsubscribePage({
     title: "You’re unsubscribed from all emails",
     description: `No more broadcasts will be sent to ${context.email}.`,
@@ -717,6 +719,7 @@ async function idempotencyMiddleware(c: Context<Bindings>, next: Next): Promise<
 }
 
 async function findUnsubscribeContext(db: D1Database, token: string): Promise<{
+  delivery_id: string | null;
   contact_id: string;
   email: string;
   topic_id: string | null;
@@ -724,7 +727,7 @@ async function findUnsubscribeContext(db: D1Database, token: string): Promise<{
 } | null> {
   const hash = await sha256(token);
   return db.prepare(
-    `SELECT ut.contact_id, ut.topic_id, c.email, t.name AS topic_name
+    `SELECT ut.delivery_id, ut.contact_id, ut.topic_id, c.email, t.name AS topic_name
      FROM unsubscribe_tokens ut
      JOIN contacts c ON c.id = ut.contact_id
      LEFT JOIN topics t ON t.id = ut.topic_id

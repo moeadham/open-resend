@@ -37,19 +37,27 @@ describe("broadcast recipient reporting", () => {
     expect(last.recipients).toHaveLength(7);
   });
 
-  it("reports current topic/global opt-outs separately from delivery status", async () => {
+  it("counts attributed unsubscribes, not current preferences, and keeps history after resubscription", async () => {
     await env.DB.batch([
       env.DB.prepare("UPDATE contacts SET unsubscribed=1 WHERE id='results-contact-0'"),
       env.DB.prepare("INSERT INTO contact_topics (topic_id,contact_id,subscription,updated_at) VALUES ('results-topic','results-contact-1','opt_out',?)").bind(now),
       env.DB.prepare("INSERT INTO contact_topics (topic_id,contact_id,subscription,updated_at) VALUES ('results-topic','results-contact-0','opt_out',?)").bind(now),
     ]);
+    const before = await loadBroadcastResults(env.DB, "results-broadcast", new URLSearchParams({ delivery_status: "unsubscribed" }));
+    expect(before.unsubscribed).toBe(0);
+    await env.DB.prepare("UPDATE deliveries SET unsubscribed_at=? WHERE id='results-delivery-02'").bind(now).run();
     const result = await loadBroadcastResults(env.DB, "results-broadcast", new URLSearchParams({ delivery_status: "unsubscribed" }));
-    expect(result.unsubscribed).toBe(2);
-    expect(result.filteredTotal).toBe(2);
-    expect(result.recipients.every(row => row.status === "delivered" && row.opted_out === 1)).toBe(true);
+    expect(result.unsubscribed).toBe(1);
+    expect(result.filteredTotal).toBe(1);
+    expect(result.recipients[0]?.unsubscribed_at).toBe(now);
+    expect(result.recipients[0]?.status).toBe("delivered");
     await env.DB.prepare("UPDATE broadcasts SET topic_id=NULL WHERE id='results-broadcast'").run();
     const global = await loadBroadcastResults(env.DB, "results-broadcast", new URLSearchParams({ delivery_status: "unsubscribed" }));
     expect(global.unsubscribed).toBe(1);
+    await env.DB.prepare("DELETE FROM contacts WHERE id='results-contact-2'").run();
+    const deleted = await loadBroadcastResults(env.DB, "results-broadcast", new URLSearchParams({ delivery_status: "unsubscribed" }));
+    expect(deleted.unsubscribed).toBe(1);
+    expect(deleted.recipients[0]?.contact_id).toBe(null);
   });
 
   it("filters failures, pending provider acceptance, literal search, and invalid pages safely", async () => {
@@ -77,7 +85,8 @@ describe("broadcast recipient reporting", () => {
     const html = BroadcastResultsPanel({ id: "results-broadcast", results: result, canRetry: true }).toString();
     expect(html).toContain("<summary>");
     expect(html).toContain("Mailbox does not exist");
-    expect(html).toContain("not campaign-attributed clicks");
+    expect(html).toContain("Unique recipients who unsubscribed through this broadcast");
+    expect(html).toContain("Older untracked links");
     expect(html).not.toContain("mobile-hide");
     expect(html).not.toContain("View contact");
     expect(html).toContain("data-confirm");

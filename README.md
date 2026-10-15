@@ -326,6 +326,8 @@ Also outside v1: public signup forms, broadcast recipient export, and open/click
 - Each campaign uses the unsubscribe hostname mapped to its sender's domain in `.deployment.json`. Sending and test-send preflight fail if that mapping is missing.
 - Each email includes RFC 8058 `List-Unsubscribe` and `List-Unsubscribe-Post` headers.
 - Browser `GET` displays confirmation or preference toggles without changing state. `POST` changes only the requested Topic preference unless the recipient explicitly chooses global unsubscribe.
+- The broadcast **Unsubscribed** counter records unique recipients who opted out through that broadcast's links. It persists after resubscription and does not count admin/API preference edits or changes from another broadcast. Repeated submissions count once.
+- Broadcast attribution starts with links generated after migration `0006_broadcast_unsubscribe_attribution.sql`. Older links still update preferences, but cannot reliably be attributed to a broadcast; historical counts are not backfilled from current contact preferences.
 - Authenticated admin and API operations can explicitly update global and Topic preferences.
 - Delivery Queue messages contain only a delivery ID. Large broadcasts use bounded coordinator messages to create and enqueue deliveries asynchronously, and state and cancellation are rechecked before work continues.
 - Queue delivery is at least once. Atomic delivery claims remove normal duplicates, but a crash after Email Service accepts a message and before D1 records that result can still cause a rare duplicate.

@@ -209,8 +209,8 @@ export async function processDeliveryMessage(message: Message<DeliveryQueueMessa
   const token = randomToken();
   const tokenHash = await sha256(token);
   await env.DB.prepare(
-    "INSERT INTO unsubscribe_tokens (token_hash, contact_id, topic_id, created_at) VALUES (?, ?, ?, ?)",
-  ).bind(tokenHash, detail.contact_id, detail.topic_id, nowIso()).run();
+    "INSERT INTO unsubscribe_tokens (token_hash, contact_id, topic_id, delivery_id, created_at) VALUES (?, ?, ?, ?, ?)",
+  ).bind(tokenHash, detail.contact_id, detail.topic_id, detail.id, nowIso()).run();
   const unsubscribeUrl = `${unsubscribeUrlBase}/unsubscribe/${token}`;
 
   try {
