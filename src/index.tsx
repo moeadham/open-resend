@@ -24,13 +24,16 @@ export default {
   },
 
   async queue(batch: MessageBatch<QueueBody>, env: Env): Promise<void> {
-    if (batch.queue === "cloudflare-resend-deliveries-dlq") {
+    if (batch.queue === env.DEAD_LETTER_QUEUE_NAME) {
       await processDeadLetter(batch as MessageBatch<DeliveryQueueMessage | BroadcastQueueMessage>, env);
       return;
     }
+    if (batch.queue !== env.EMAIL_EVENTS_QUEUE_NAME && batch.queue !== env.DELIVERY_QUEUE_NAME) {
+      throw new Error(`Received a batch from an unconfigured queue: ${batch.queue}`);
+    }
     for (const message of batch.messages) {
       try {
-        if (batch.queue === "cloudflare-resend-email-events") {
+        if (batch.queue === env.EMAIL_EVENTS_QUEUE_NAME) {
           await processEmailEvent(message as Message<EmailEventMessage>, env);
         } else if ("broadcastId" in message.body) {
           await processBroadcastQueueMessage(message as Message<BroadcastQueueMessage>, env);

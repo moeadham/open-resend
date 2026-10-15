@@ -28,6 +28,7 @@ if (!isUuid(deployment.d1DatabaseId) || deployment.d1DatabaseId === "00000000-00
 const deliveryQueue = optionalString(deployment.deliveryQueue, "cloudflare-resend-deliveries");
 const deadLetterQueue = optionalString(deployment.deadLetterQueue, "cloudflare-resend-deliveries-dlq");
 const emailEventsQueue = optionalString(deployment.emailEventsQueue, "cloudflare-resend-email-events");
+if (new Set([deliveryQueue, deadLetterQueue, emailEventsQueue]).size !== 3) fail("Delivery, dead-letter, and email-events queues must have distinct names.");
 
 const config = {
   ...base,
@@ -58,6 +59,9 @@ const config = {
   },
   vars: {
     ...base.vars,
+    DELIVERY_QUEUE_NAME: deliveryQueue,
+    DEAD_LETTER_QUEUE_NAME: deadLetterQueue,
+    EMAIL_EVENTS_QUEUE_NAME: emailEventsQueue,
     ADMIN_HOSTNAME: adminHostname,
     API_HOSTNAME: apiHostname,
     CLOUDFLARE_ACCOUNT_ID: requireAccountId(deployment.accountId),

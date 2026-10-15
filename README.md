@@ -105,7 +105,7 @@ The script opens two prefilled token templates: a deployment token for Access an
 
 Click an image in the editor to resize it: drag the blue bottom-right handle, choose a width preset, or enter an exact pixel width. The handle also supports arrow keys. Widths are saved with the email; images retain their proportions and shrink to fit smaller screens.
 
-To place two images beside each other, insert them in adjacent image-only paragraphs, select either image, and choose **Side by side**. Blank lines between them are allowed; intervening text is never moved. **Stack images** separates them again. Saved rows use presentation tables and stack on narrow screens in email clients that support media queries. The text toolbar also offers Left, Center, Right, and **Justify (full width)** alignment; alignment is saved as inline email styling.
+Images flow inline like text: insert them next to one another to share a line, press Enter between them to start a new paragraph, or remove that line break to join them again. Resize them to fit together; images wrap naturally when the available space is too narrow. There is no separate pairing or column mode. The text toolbar also offers Left, Center, Right, and **Justify (full width)** alignment; alignment is saved as inline email styling.
 
 The broadcast editor's **Insert image** button uploads PNG, JPEG, GIF, and WebP files (up to Cloudflare Images' 10 MB limit) to your account's Cloudflare Images storage and inserts the public delivery URL. Pasting or dropping image files uses the same upload flow. Upload progress and prominent errors appear directly below the editor toolbar. Alt text is optional, and images scale to fit mobile emails. No attachments or inline base64 images are generated.
 

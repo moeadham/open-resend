@@ -55,6 +55,9 @@
     { "name": "EMAIL" }
   ],
   "vars": {
+    "DELIVERY_QUEUE_NAME": "cloudflare-resend-deliveries",
+    "DEAD_LETTER_QUEUE_NAME": "cloudflare-resend-deliveries-dlq",
+    "EMAIL_EVENTS_QUEUE_NAME": "cloudflare-resend-email-events",
     "ADMIN_HOSTNAME": "admin.example.com",
     "API_HOSTNAME": "api.example.com",
     "CLOUDFLARE_ACCOUNT_ID": "00000000000000000000000000000000",

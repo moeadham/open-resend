@@ -37,6 +37,9 @@ try {
   assert(config.vars.ALLOW_LOCAL_ADMIN === "false", "production config must disable the local bypass");
   assert(config.d1_databases[0].database_id === "00000000-0000-4000-8000-000000000003", "D1 ID was not rendered");
   assert(config.queues.consumers[0].dead_letter_queue === "cloudflare-resend-test-deliveries-dlq", "DLQ was not rendered");
+  assert(config.vars.DELIVERY_QUEUE_NAME === config.queues.consumers[0].queue, "delivery routing does not match the configured queue");
+  assert(config.vars.EMAIL_EVENTS_QUEUE_NAME === config.queues.consumers[1].queue, "email-event routing does not match the configured queue");
+  assert(config.vars.DEAD_LETTER_QUEUE_NAME === config.queues.consumers[2].queue, "dead-letter routing does not match the configured queue");
 
   console.log("Deployment configuration rendering verified.");
 } finally {

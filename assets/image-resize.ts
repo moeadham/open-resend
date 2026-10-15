@@ -1,5 +1,4 @@
 import Quill from "quill";
-import { canPairImage, changeImageRow } from "./image-layout";
 
 export function enableImageResize(quill: Quill, editor: HTMLElement): void {
   let selected: HTMLImageElement | null = null;
@@ -22,19 +21,6 @@ export function enableImageResize(quill: Quill, editor: HTMLElement): void {
     button.addEventListener("click", () => resize(width));
     controls.append(button);
   }
-  const pairButton = document.createElement("button");
-  pairButton.type = "button"; pairButton.textContent = "Side by side";
-  const stackButton = document.createElement("button");
-  stackButton.type = "button"; stackButton.textContent = "Stack images";
-  controls.append(pairButton, stackButton);
-  for (const [button, stack] of [[pairButton, false], [stackButton, true]] as const) button.addEventListener("click", () => {
-    if (!selected) return;
-    const result = changeImageRow(quill, selected, stack);
-    if (result) {
-      selected = result; controls.hidden = false; outline.hidden = false;
-      observer.disconnect(); observer.observe(selected); observer.observe(quill.root); position();
-    }
-  });
   editor.before(controls);
 
   const outline = document.createElement("div");
@@ -50,10 +36,6 @@ export function enableImageResize(quill: Quill, editor: HTMLElement): void {
     const rect = selected.getBoundingClientRect();
     Object.assign(outline.style, { top: `${rect.top}px`, left: `${rect.left}px`, width: `${rect.width}px`, height: `${rect.height}px` });
     if (document.activeElement !== widthInput) widthInput.value = selected.getAttribute("width") ?? String(Math.round(rect.width));
-    const row = selected.closest('[data-image-row="two"]');
-    pairButton.hidden = Boolean(row); pairButton.disabled = !canPairImage(selected);
-    pairButton.title = pairButton.disabled ? "Add another image immediately above or below this image first" : "Place this image beside its neighboring image";
-    stackButton.hidden = !row;
   }
   function hide() { selected = null; controls.hidden = true; outline.hidden = true; observer.disconnect(); }
   function resize(width: number) {

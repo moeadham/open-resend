@@ -3,9 +3,22 @@ import { combobox } from "@kiwa-ui/enhance/combobox";
 import { datePicker } from "@kiwa-ui/enhance/date-picker";
 import { IMAGE_SIZE_ERROR, MAX_IMAGE_BYTES } from "../src/image-policy";
 import { enableImageResize } from "./image-resize";
-import { registerImageRows, restoreImageRows, serializeImageRows } from "./image-layout";
+import { restoreInlineImages } from "./image-import";
 
-registerImageRows();
+document.querySelectorAll<HTMLElement>("[data-email-preview]").forEach((preview) => {
+  const tabs = Array.from(preview.querySelectorAll<HTMLButtonElement>("[data-preview-tab]"));
+  const select = (tab: HTMLButtonElement) => {
+    tabs.forEach(item => { item.setAttribute("aria-selected", String(item === tab)); item.tabIndex = item === tab ? 0 : -1; });
+    preview.querySelectorAll<HTMLElement>("[data-preview-panel]").forEach(panel => { panel.hidden = panel.dataset.previewPanel !== tab.dataset.previewTab; });
+  };
+  tabs.forEach((tab, index) => {
+    tab.addEventListener("click", () => select(tab));
+    tab.addEventListener("keydown", (event) => {
+      const target = event.key === "ArrowRight" ? tabs[(index + 1) % tabs.length] : event.key === "ArrowLeft" ? tabs[(index + tabs.length - 1) % tabs.length] : event.key === "Home" ? tabs[0] : event.key === "End" ? tabs[tabs.length - 1] : null;
+      if (target) { event.preventDefault(); select(target); target.focus(); }
+    });
+  });
+});
 
 const editor = document.querySelector<HTMLElement>("[data-rich-editor]");
 const input = document.querySelector<HTMLTextAreaElement>("#html-input");
@@ -51,7 +64,7 @@ if (editor && input) {
   // Immediately below Quill's toolbar, not beneath the entire email body.
   editor.before(status);
   enableImageResize(quill, editor);
-  restoreImageRows(quill);
+  restoreInlineImages(quill);
   const alignment = editor.parentElement?.querySelector(".ql-align");
   alignment?.querySelector(".ql-picker-label")?.setAttribute("aria-label", "Text alignment");
   alignment?.querySelectorAll<HTMLElement>(".ql-picker-item").forEach((item) => {
@@ -110,7 +123,7 @@ if (editor && input) {
     const content = document.createElement("template");
     content.innerHTML = quill.getSemanticHTML();
     content.content.querySelectorAll("img").forEach((image) => {
-      image.style.maxWidth = "100%"; image.style.height = "auto"; image.style.display = "block";
+      image.style.maxWidth = "100%"; image.style.height = "auto"; image.style.display = "inline-block"; image.style.verticalAlign = "middle";
       const width = Number(image.getAttribute("width"));
       if (Number.isFinite(width) && width > 0) image.style.width = `${width}px`;
       if (!image.hasAttribute("alt")) image.setAttribute("alt", "");
@@ -118,7 +131,6 @@ if (editor && input) {
     for (const align of ["center", "right", "justify"] as const) {
       content.content.querySelectorAll<HTMLElement>(`.ql-align-${align}`).forEach((element) => { element.style.textAlign = align; });
     }
-    serializeImageRows(content.content);
     input.value = content.innerHTML;
   });
 }

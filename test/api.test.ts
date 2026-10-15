@@ -266,7 +266,10 @@ describe("Resend-compatible API", () => {
     const failed = await SELF.fetch("https://admin.example.com/broadcasts/broadcast-admin", { headers: { "Cf-Access-Jwt-Assertion": token } });
     const failedHtml = await failed.text();
     expect(failedHtml).toContain("Retry failures");
-    expect(failedHtml).toContain("responsive-table");
+    expect(failedHtml).toContain("recipient-list");
+    expect(failedHtml.indexOf('aria-label="Broadcast results"')).toBeLessThan(failedHtml.indexOf('data-email-preview'));
+    expect(failedHtml).toContain('data-preview-tab="text"');
+    expect(failedHtml).toContain('data-preview-tab="html"');
   });
 
   it("uses an empty campaign body instead of saving editor placeholder text", async () => {
