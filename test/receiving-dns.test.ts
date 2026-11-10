@@ -17,8 +17,8 @@ const bindings = new Proxy(env, {get(target, property, receiver) {
 
 beforeEach(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
-  await env.DB.prepare("INSERT INTO receiving_domains(name,zone_id,status,addresses_json,created_at) VALUES(?,?,'pending','[]',?)")
-    .bind(name, zone, new Date().toISOString()).run();
+  await env.DB.prepare("INSERT INTO receiving_domains(name,zone_id,status,addresses_json,created_at) VALUES(?,?,'pending',?,?)")
+    .bind(name, zone, JSON.stringify(["calendar@r.example.com"]), new Date().toISOString()).run();
   existing = [
     {id:"apex",type:"MX",name:"example.com",content:"production.example.net",priority:10,ttl:300},
     {id:"old",type:"MX",name,content:"inbound-smtp.eu-west-1.amazonaws.com",priority:10,ttl:300},
@@ -41,11 +41,18 @@ beforeEach(async () => {
     if(request.method !== "GET") {
       expect(url.pathname).toBe(`/client/v4/zones/${zone}/dns_records/batch`);
       writes.push({url:request.url,body:await request.json() as any});
+      if (!failBatch) {
+        const batch = writes.at(-1)!.body;
+        existing = existing.filter(record => !batch.deletes.some(deleted => deleted.id === record.id));
+        for (const patch of batch.patches) Object.assign(existing.find(record => record.id === patch.id)!, patch);
+        for (const record of batch.posts) existing.push({...record, id: `created-${existing.length}`});
+      }
       return Response.json(failBatch ? {success:false,errors:[{message:"DNS Edit permission required"}]} : {success:true,result:{}}, {status:failBatch?403:200});
     }
     let result: unknown;
     if(url.pathname.endsWith("/email/routing/dns")) result=required;
     else if(url.pathname===`/client/v4/zones/${zone}`) result={name:"example.com"};
+    else if(url.pathname.endsWith("/email/routing/rules")) result=[{id:"existing-rule",enabled:true,matchers:[{type:"literal",field:"to",value:"calendar@r.example.com"}],actions:[{type:"worker",value:[env.WORKER_NAME]}]}];
     else if(url.pathname.endsWith("/email/routing")) result={enabled:routingEnabled};
     else if(url.pathname.endsWith("/dns_records")) result=existing.filter(r=>r.name===url.searchParams.get("name"));
     else throw Error("Unexpected Cloudflare API path");
@@ -71,6 +78,7 @@ async function migrate(snapshot:string, mode="replace", confirm=name, origin="ht
 it("previews a domain-specific migration without changing DNS",async()=>{
   const {html}=await preview();
   expect(html).toContain("Migrate now");
+  expect(html).not.toContain("added the record");
   expect(html).toContain("inbound-smtp.eu-west-1.amazonaws.com");
   expect(html).toContain("include:mailgun.org include:_spf.mx.cloudflare.net -all");
   expect(html).toContain('value="overlap"');
@@ -93,7 +101,7 @@ it("replaces only the chosen domain's provider MX and merges SPF in one Cloudfla
   expect(writes[0]!.body.deletes).toEqual([{id:"old"}]);
   expect(writes[0]!.body.patches).toEqual([{id:"spf",type:"TXT",name,ttl:300,content:"v=spf1 include:mailgun.org include:_spf.mx.cloudflare.net -all"}]);
   expect(writes[0]!.body.posts).toEqual([10,20,30].map((priority,i)=>({type:"MX",name,content:`route${i+1}.mx.cloudflare.net.`,ttl:1,priority})));
-  expect(await env.DB.prepare("SELECT status FROM receiving_domains WHERE name=?").bind(name).first("status")).toBe("pending");
+  expect(await env.DB.prepare("SELECT status FROM receiving_domains WHERE name=?").bind(name).first("status")).toBe("verified");
 });
 it("adds overlapping records without deleting the existing provider or other TXT records",async()=>{
   existing=existing.filter(r=>r.id!=="spf");

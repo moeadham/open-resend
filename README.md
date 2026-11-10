@@ -457,7 +457,9 @@ explicit confirmation. Choose replacement to remove the selected domain's old MX
 records, or overlap to retain them while adding Cloudflare records. Existing SPF
 permissions are merged rather than publishing a second SPF record. DNS Edit
 permission is required for this button. The action uses Cloudflare's transactional
-DNS batch API, rejects changed previews, and does not mark the domain verified.
+DNS batch API and rejects changed previews. Once routing is enabled and the old
+MX conflict is resolved, the same action verifies receiving and creates routing
+rules; no manual “I’ve added the record” step is needed.
 Cloudflare routing must be enabled before removing an existing provider's MX
 records. The receiving setup requires Cloudflare onboarding rather than silently
 enabling routing on a domain with an existing mail provider. The deprecated Cloudflare DNS `subdomain` query is not used.

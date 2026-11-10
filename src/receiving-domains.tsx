@@ -415,7 +415,8 @@ receivingAdmin.get("/:name", async (c) => {
       <Modal id="migrate-receiving-dns" title={`Migrate ${row.name}`}>
         <DnsMigrationForm name={row.name} plan={plan} />
       </Modal>
-      {c.req.query("dns") === "updated" && <div class="panel">DNS changes submitted. Allow time for propagation, then verify receiving. Cloudflare Email Routing must also be enabled.</div>}
+      {c.req.query("routing_error") && <div class="panel error">DNS is saved. Receiving setup still needs attention: {c.req.query("routing_error")}</div>}
+      {c.req.query("dns") === "updated" && !c.req.query("routing_error") && <div class="panel">DNS changes submitted. Enable Cloudflare Email Routing, then use Migrate now to finish setup. If you kept the existing provider, choose replacement when routing is ready.</div>}
 
       <Modal
         id="receiving-mx-records"
@@ -437,9 +438,6 @@ receivingAdmin.get("/:name", async (c) => {
           <summary class="button">Migrate now</summary>
           <DnsMigrationForm name={row.name} plan={plan} />
         </details>
-        <form method="post" action={`/receiving-domains/${row.name}/verify`}>
-          <ModalActions submitLabel="I’ve added the record" />
-        </form>
       </Modal>
 
       <p>
@@ -454,7 +452,7 @@ receivingAdmin.get("/:name", async (c) => {
             View setup instructions
           </ModalTrigger>
         </div>
-        <p>Add these records at your DNS provider, then verify receiving.</p>
+        <p>Use Migrate now to review and apply the receiving DNS changes.</p>
         {conflicts.length > 0 && (
           <div class="panel error">
             <strong>Existing mail provider detected</strong>
@@ -466,9 +464,7 @@ receivingAdmin.get("/:name", async (c) => {
           </div>
         )}
         <DnsTable records={required} />
-        <form method="post" action={`/receiving-domains/${row.name}/verify`}>
-          <button class="primary">I’ve added the record</button>
-        </form>
+        <ModalTrigger target="migrate-receiving-dns">Migrate now</ModalTrigger>
       </section>
       <section class="panel">
         <h2>Routing</h2>
@@ -527,6 +523,15 @@ receivingAdmin.post("/:name/migrate-dns", async (c) => {
   if (deletes.length || batch.patches.length || batch.posts.length) {
     await cf(c.env, `/zones/${row.zone_id}/dns_records/batch`, { method: "POST", body: JSON.stringify(batch) });
     await c.env.DB.prepare("UPDATE receiving_domains SET status='pending' WHERE name=?").bind(row.name).run();
+  }
+  if (plan.routingEnabled && (form.mx_mode === "replace" || !plan.conflicts.length)) {
+    try {
+      await verifyAndRoute(c.env, row);
+      return c.redirect(`/receiving-domains/${row.name}`, 303);
+    } catch (error) {
+      if (!(error instanceof AppError)) throw error;
+      return c.redirect(`/receiving-domains/${row.name}?dns=updated&routing_error=${encodeURIComponent(error.message)}`, 303);
+    }
   }
   return c.redirect(`/receiving-domains/${row.name}?dns=updated`, 303);
 });
@@ -639,10 +644,11 @@ function DnsMigrationForm({ name, plan }: { name: string; plan: DnsPlan }) {
       <p class="field-help">Keeping both providers can leave mail going to your old provider. Receiving verification stays blocked until the old MX records are removed.</p>
     </> : <input type="hidden" name="mx_mode" value="overlap" />}
     {!plan.routingEnabled && <div class="panel error">Cloudflare Email Routing is not enabled yet. You can add records now, but enable routing before moving mail away from your existing provider.</div>}
-    {!plan.changes.length && !plan.conflicts.length ? <p>The required DNS records are already present. You can verify receiving.</p> : <>
-      <p class="field-help">Writing records requires DNS Edit permission. DNS changes may take time to propagate. This action does not enable Cloudflare routing or mark the domain verified.</p>
+    {!plan.changes.length && !plan.conflicts.length && <p>The required DNS records are already present. Migrate now will check routing and finish receiving setup.</p>}
+    <>
+      <p class="field-help">Writing records requires DNS Edit permission. DNS changes may take time to propagate. This action also verifies receiving and creates the routing rules when Cloudflare Email Routing is enabled.</p>
       <label class="dns-migration-confirm"><input type="checkbox" name="confirm_dns" value={name} required /> I approve the displayed DNS changes for {name} and the selected handling of existing MX records.</label>
       <button class="primary" disabled={plan.blockers.length > 0}>Migrate now</button>
-    </>}
+    </>
   </form>;
 }
