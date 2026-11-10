@@ -92,7 +92,6 @@
     "ENVIRONMENT": "development",
     "ALLOW_LOCAL_ADMIN": "true",
     "WEBHOOK_QUEUE_NAME": "cloudflare-resend-webhooks",
-    "INBOUND_AUTH_RESULTS_VERIFIED": "false",
     "WORKER_NAME": "cloudflare-resend",
     "API_HOSTNAME_ALIASES": ""
   },

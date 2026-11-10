@@ -11,6 +11,7 @@ import { Resend } from "resend";
 import { parseEmail } from "../src/parse-email";
 import worker from "../src/index";
 import { apiApp } from "../src/api";
+import { adminApp } from "../src/admin";
 import { sha256, nowIso } from "../src/lib";
 import type { QueueBody } from "../src/types";
 
@@ -77,6 +78,7 @@ afterEach(() => {
 function incoming(
   extraHeaders = "",
   attachment = true,
+  authenticationResults?: string,
 ): ForwardableEmailMessage {
   const source = [
     "From: Jane <jane@example.net>",
@@ -111,7 +113,12 @@ function incoming(
   return {
     from: "bounce@example.net",
     to: "calendar@example.com",
-    headers: new Headers({ subject: "Calendar invitation" }),
+    headers: new Headers({
+      subject: "Calendar invitation",
+      ...(authenticationResults
+        ? { "authentication-results": authenticationResults }
+        : {}),
+    }),
     raw: new Response(bytes).body!,
     rawSize: bytes.length,
     setReject: vi.fn(),
@@ -129,6 +136,28 @@ async function dispatch(queue: string, body: QueueBody, bindings: Env = env) {
 }
 
 describe("transactional Resend SDK contract", () => {
+  it("shows the Resend email object instead of MIME source in the admin Raw tab", async () => {
+    const sent = await resend.emails.send({
+      from: "Calendar <calendar@example.com>",
+      to: "jane@example.net",
+      subject: "Admin raw JSON",
+      html: "<p>Confirmed</p>",
+      text: "Confirmed",
+    });
+    expect(sent.error).toBeNull();
+
+    const response = await adminApp.fetch(
+      new Request(`http://localhost/emails/${sent.data!.id}?view=raw`),
+      env,
+    );
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("&quot;object&quot;: &quot;email&quot;");
+    expect(html).toContain(`&quot;id&quot;: &quot;${sent.data!.id}&quot;`);
+    expect(html).toContain("&quot;subject&quot;: &quot;Admin raw JSON&quot;");
+    expect(html).not.toContain("MIME-Version:");
+  });
+
   it("creates a queued email idempotently and preserves MIME, CC, BCC, threading and binary attachments", async () => {
     const message = {
       from: "Calendar <calendar@example.com>",
@@ -250,7 +279,13 @@ describe("transactional Resend SDK contract", () => {
     expect(webhook.error).toBeNull();
     const secret = webhook.data!.signing_secret;
     await worker.email(
-      incoming("Authentication-Results: attacker.example; spf=pass; dkim=pass"),
+      incoming(
+        [
+          "Received: from sender.example by attacker.example",
+          "Received: by sender.example with SMTP",
+          "Authentication-Results: mx.cloudflare.net; spf=pass; dkim=pass; dmarc=pass",
+        ].join("\r\n"),
+      ),
       env,
     );
     const event = await env.DB.prepare(
@@ -261,13 +296,47 @@ describe("transactional Resend SDK contract", () => {
     const retrieved = await resend.emails.receiving.get(id);
     expect(retrieved.error).toBeNull();
     expect(retrieved.data).toMatchObject({
+      object: "email",
+      id,
       from: "jane@example.net",
       to: ["calendar@example.com"],
+      cc: [],
+      bcc: [],
+      reply_to: [],
       subject: "Calendar invitation",
-      authentication: null,
+      message_id: "<calendar-contract@example.net>",
+      html: null,
+      text: "Please add this event.",
+      html_format: "data_uri",
+      received_for: [],
+      authentication: {
+        spf: "unknown",
+        dkim: "unknown",
+        dmarc: "unknown",
+      },
+      raw: {
+        download_url: expect.any(String),
+        expires_at: expect.any(String),
+      },
+      attachments: [
+        {
+          id: expect.any(String),
+          filename: "invite.ics",
+          content_type: "text/calendar",
+          content_disposition: "attachment",
+          content_id: null,
+          size: 32,
+        },
+      ],
+      created_at: expect.any(String),
+      last_event: "received",
     });
-    expect(retrieved.data?.headers?.["authentication-results"]).not.toContain(
-      "spf=pass",
+    expect(retrieved.data?.headers?.["authentication-results"]).toBeUndefined();
+    expect(JSON.parse(retrieved.data!.headers!.received!)).toEqual(
+      [
+        "from sender.example by attacker.example",
+        "by sender.example with SMTP",
+      ],
     );
     const attachment = await resend.emails.receiving.attachments.get({
       emailId: id,
@@ -314,20 +383,7 @@ describe("transactional Resend SDK contract", () => {
     const lists = await resend.emails.receiving.list();
     expect(lists.data?.data[0]?.id).toBe(id);
   });
-  it("keeps incomplete authentication unknown and rejects unknown receiving domains", async () => {
-    const msg = incoming(
-      "Authentication-Results: mx.cloudflare.net; spf=fail; dkim=fail\r\nAuthentication-Results: mx.cloudflare.net; spf=pass; dkim=pass",
-      false,
-    );
-    await worker.email(msg, env);
-    const received = await resend.emails.receiving.list();
-    const detail = await resend.emails.receiving.get(
-      received.data!.data[0]!.id,
-    );
-    expect(detail.data).toMatchObject({ authentication: null });
-    expect(detail.data?.headers?.["authentication-results"]).not.toContain(
-      "pass",
-    );
+  it("rejects unknown receiving domains", async () => {
     const rejected = incoming();
     Object.defineProperty(rejected, "to", {
       value: "calendar@unknown.example",
@@ -563,7 +619,14 @@ it("supports fwd2cal’s declared Resend 6.4.2 client without a custom adapter",
     events: ["email.received"],
   });
   expect(hook.data?.signing_secret).toMatch(/^whsec_/);
-  await worker.email(incoming(), env);
+  await worker.email(
+    incoming(
+      "",
+      true,
+      "mx.cloudflare.net; spf=pass smtp.mailfrom=bounce@example.net; dkim=pass header.d=example.net; dmarc=pass header.from=example.net policy.dmarc=reject",
+    ),
+    env,
+  );
   const event = await env.DB.prepare(
     "SELECT payload FROM webhook_events",
   ).first<{ payload: string }>();
@@ -578,30 +641,27 @@ it("supports fwd2cal’s declared Resend 6.4.2 client without a custom adapter",
 });
 
 it.each([
-  { header: "spf=fail (attacker says spf=pass); dkim=fail", expected: { spf: "fail", dkim: "fail", dmarc: "unknown" } },
-  { header: "dkim=pass header.d=example.net; dmarc=pass header.from=example.net; spf=none smtp.helo=mail.example.net; spf=pass smtp.mailfrom=bounce@example.net", expected: { spf: "pass", dkim: "pass", dmarc: "pass" } },
-  { header: 'spf=none (untrusted; spf=pass smtp.mailfrom=attacker); spf=fail smtp.mailfrom=sender@example.net; dkim=fail reason="untrusted; dkim=pass"', expected: { spf: "fail", dkim: "fail", dmarc: "unknown" } },
+  { header: "spf=fail (attacker says spf=pass) smtp.mailfrom=sender@example.net; dkim=fail header.d=example.net", expected: { spf: "fail", dkim: "fail", dmarc: "unknown" } },
+  { header: "dkim=pass header.d=example.net; dmarc=pass header.from=example.net policy.dmarc=reject; spf=none smtp.helo=mail.example.net; spf=pass smtp.mailfrom=bounce@example.net", expected: { spf: "pass", dkim: "pass", dmarc: "pass" } },
+  { header: 'spf=none (untrusted; spf=pass smtp.mailfrom=attacker); spf=fail smtp.mailfrom=sender@example.net; dkim=fail header.d=example.net reason="untrusted; dkim=pass"', expected: { spf: "fail", dkim: "fail", dmarc: "unknown" } },
+  { header: "dkim=pass header.d=example.net; dmarc=pass header.from=example.net policy.dmarc=none; spf=none smtp.helo=mail.example.net; spf=pass smtp.mailfrom=bounce@example.net", expected: { spf: "pass", dkim: "pass", dmarc: "gray" } },
+  { header: "dkim=pass header.d=mailer.other.example; dmarc=fail header.from=example.net; spf=softfail smtp.mailfrom=bounce@example.net", expected: { spf: "gray", dkim: "gray", dmarc: "fail" } },
 ])("canonicalizes the trusted receiver result: $header", async ({header, expected}) => {
-  const verifiedEnv = new Proxy(env, {
-    get(target, property, receiver) {
-      return property === "INBOUND_AUTH_RESULTS_VERIFIED"
-        ? "true"
-        : Reflect.get(target, property, receiver);
-    },
-  });
+  const trustedHeader = `mx.cloudflare.net; ${header}`;
   await worker.email(
     incoming(
-      `Authentication-Results: mx.cloudflare.net; ${header}\r\nAuthentication-Results: mx.cloudflare.net; spf=pass; dkim=pass`,
+      "Authentication-Results: mx.cloudflare.net; spf=pass; dkim=pass; dmarc=pass",
+      true,
+      trustedHeader,
     ),
-    verifiedEnv,
+    env,
   );
   const received = await resend.emails.receiving.list();
   const detail = await resend.emails.receiving.get(received.data!.data[0]!.id);
   expect(detail.data).toMatchObject({
     authentication: expected,
     headers: {
-      "authentication-results":
-        `open-resend; spf=${expected.spf}; dkim=${expected.dkim}; dmarc=${expected.dmarc}`,
+      "authentication-results": trustedHeader,
     },
   });
 });

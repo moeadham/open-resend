@@ -15,26 +15,25 @@ import {
 } from "./transactional-storage";
 import { publishWebhookOutbox } from "./webhooks";
 
-// Cloudflare's header-boundary behavior must be verified with a live spoof test before
-// enabling INBOUND_AUTH_RESULTS_VERIFIED. A matching authserv-id alone is not proof.
-function authentication(
-  headers: { key: string; value: string }[],
-  verified: boolean,
-) {
-  const unknown = { spf: "unknown", dkim: "unknown", dmarc: "unknown" };
-  if (!verified)
-    return {
-      authentication: null,
-      header: "open-resend; spf=none; dkim=none; dmarc=none",
-    };
-  const first = headers.find(
-    (h) => h.key.toLowerCase() === "authentication-results",
-  )?.value;
+type AuthenticationStatus =
+  | "pass"
+  | "fail"
+  | "gray"
+  | "processing_failed"
+  | "unknown";
+
+type Authentication = Record<"spf" | "dkim" | "dmarc", AuthenticationStatus>;
+
+/** Cloudflare prepends this value to message.headers after it performs its own
+ * checks. Raw MIME headers are sender-controlled and must never be trusted. */
+function authentication(first: string | null, from: string): Authentication {
+  const unknown: Authentication = {
+    spf: "unknown",
+    dkim: "unknown",
+    dmarc: "unknown",
+  };
   if (!first || !/^mx\.cloudflare\.net\s*;/i.test(first))
-    return {
-      authentication: unknown,
-      header: "open-resend; spf=none; dkim=none; dmarc=none",
-    };
+    return unknown;
   // Comments and quoted property values may contain attacker-controlled text.
   // Remove them before splitting receiver-generated authentication methods.
   let clean = "";
@@ -67,40 +66,65 @@ function authentication(
     if (!quoted) clean += character;
   }
   const methods = clean.split(";").slice(1);
-  const values = Object.fromEntries(
-    ["spf", "dkim", "dmarc"].map((key) => {
-      const results = methods.flatMap(method => {
-        const match = method.match(new RegExp(`^\\s*${key}=(pass|fail|softfail|neutral|none|temperror|permerror)\\b`, "i"));
-        return match ? [{ result: match[1]!.toLowerCase(), method }] : [];
-      });
-      // SPF for HELO is distinct from SPF for the envelope sender. Cloudflare
-      // can emit both; fwd2cal needs the MAIL FROM result. Any passing DKIM
-      // signature authenticates its signing domain; DMARC records alignment.
-      const selected = key === "spf"
-        ? results.find(result => /\bsmtp\.mailfrom\s*=/i.test(result.method)) ?? results[0]
-        : key === "dkim"
-          ? results.find(result => result.result === "pass") ?? results[0]
-          : results[0];
-      const raw = selected?.result;
-      return [
-        key,
-        raw === "pass"
-          ? "pass"
-          : raw === "fail"
-            ? "fail"
-            : raw === "temperror" || raw === "permerror"
-              ? "processing_failed"
-              : raw
-                ? "gray"
-                : "unknown",
-      ];
-    }),
-  ) as typeof unknown;
-  // Build a canonical header: untrusted comments and additional headers cannot smuggle "spf=pass".
-  return {
-    authentication: values,
-    header: `open-resend; spf=${values.spf}; dkim=${values.dkim}; dmarc=${values.dmarc}`,
-  };
+  const results = (key: "spf" | "dkim" | "dmarc") =>
+    methods.flatMap((method) => {
+      const match = method.match(
+        new RegExp(
+          `^\\s*${key}=(pass|fail|softfail|neutral|none|temperror|permerror)\\b`,
+          "i",
+        ),
+      );
+      return match
+        ? [{ result: match[1]!.toLowerCase(), method }]
+        : [];
+    });
+  const normalized = (result?: string): AuthenticationStatus =>
+    result === "pass"
+      ? "pass"
+      : result === "fail"
+        ? "fail"
+        : result === "temperror" || result === "permerror"
+          ? "processing_failed"
+          : result
+            ? "gray"
+            : "unknown";
+
+  // Cloudflare may report SPF for both HELO and MAIL FROM. Resend exposes the
+  // envelope-sender result.
+  const spfResults = results("spf");
+  const spf = normalized(
+    (spfResults.find(({ method }) => /\bsmtp\.mailfrom\s*=/i.test(method)) ??
+      spfResults[0])?.result,
+  );
+
+  // A valid signature from an unrelated domain is not DKIM authentication for
+  // the visible sender. Resend reports that state as gray.
+  const fromDomain = from.split("@").at(-1)?.toLowerCase();
+  const dkimResults = results("dkim").map((result) => ({
+    ...result,
+    domain: result.method
+      .match(/\bheader\.d\s*=\s*([^\s;]+)/i)?.[1]
+      ?.toLowerCase(),
+  }));
+  const aligned = (domain?: string) => Boolean(domain && fromDomain === domain);
+  const dkimResult =
+    dkimResults.find(({ result, domain }) => result === "pass" && aligned(domain)) ??
+    dkimResults.find(({ domain }) => aligned(domain)) ??
+    dkimResults.find(({ result }) => result === "pass") ??
+    dkimResults[0];
+  const dkim =
+    dkimResult?.domain && !aligned(dkimResult.domain)
+      ? "gray"
+      : normalized(dkimResult?.result);
+
+  const dmarcResult = results("dmarc")[0];
+  const dmarc =
+    dmarcResult?.result === "pass" &&
+    /\b(?:policy\.dmarc|p)\s*=\s*none\b/i.test(dmarcResult.method)
+      ? "gray"
+      : normalized(dmarcResult?.result);
+
+  return { spf, dkim, dmarc };
 }
 export async function receiveEmail(
   message: ForwardableEmailMessage,
@@ -150,15 +174,27 @@ export async function receiveEmail(
   const id = crypto.randomUUID();
   const now = nowIso();
   const expiresAt = new Date(Date.now() + RETENTION_MS).toISOString();
-  const auth = authentication(
-    parsed.headers,
-    String(env.INBOUND_AUTH_RESULTS_VERIFIED) === "true",
+  const trustedAuthenticationHeader = message.headers.get(
+    "authentication-results",
   );
-  const headers: Record<string, string> = {};
-  for (const header of parsed.headers)
-    if (header.key.toLowerCase() !== "authentication-results")
-      headers[header.key.toLowerCase()] = header.value;
-  headers["authentication-results"] = auth.header;
+  const auth = authentication(
+    trustedAuthenticationHeader,
+    parsed.from?.address ?? message.from,
+  );
+  const headerValues = new Map<string, string[]>();
+  for (const header of parsed.headers) {
+    const key = header.key.toLowerCase();
+    if (key === "authentication-results") continue;
+    headerValues.set(key, [...(headerValues.get(key) ?? []), header.value]);
+  }
+  if (trustedAuthenticationHeader)
+    headerValues.set("authentication-results", [trustedAuthenticationHeader]);
+  const headers = Object.fromEntries(
+    [...headerValues].map(([key, values]) => [
+      key,
+      values.length === 1 ? values[0]! : JSON.stringify(values),
+    ]),
+  );
   const addresses = (list: typeof parsed.to) =>
     list?.flatMap((a) =>
       "address" in a && a.address
@@ -222,7 +258,7 @@ export async function receiveEmail(
       headers,
       message_id: parsed.messageId ?? null,
       attachments,
-      authentication: auth.authentication,
+      authentication: auth,
       received_for: parsed.headers
         .filter((h) => h.key === "received")
         .flatMap((h) =>

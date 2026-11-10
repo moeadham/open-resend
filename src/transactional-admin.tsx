@@ -12,6 +12,7 @@ import {
   mailRow,
   storedMail,
   downloadInfo,
+  emailResponse,
   type MailRow,
 } from "./transactional-storage";
 import {
@@ -195,9 +196,9 @@ transactionalAdmin.get("/emails/:id", async (c) => {
   const row = await mailRow(c.env, c.req.param("id"));
   const mail = await storedMail(c.env, row.id);
   const view = c.req.query("view") ?? "preview";
-  const raw =
+  const rawJson =
     view === "raw"
-      ? await c.env.EMAIL_STORAGE.get(`emails/${row.id}/raw.eml`)
+      ? JSON.stringify(await emailResponse(c.env, row), null, 2)
       : null;
   const events = await c.env.DB.prepare(
     "SELECT status,recipient,created_at FROM transactional_events WHERE email_id=? ORDER BY created_at",
@@ -303,9 +304,7 @@ transactionalAdmin.get("/emails/:id", async (c) => {
           id="email-source"
           value={
             view === "raw"
-              ? raw
-                ? await raw.text()
-                : ""
+              ? (rawJson ?? "")
               : view === "html"
                 ? (mail.html ?? "")
                 : (mail.text ?? "")

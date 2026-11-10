@@ -180,6 +180,7 @@ export async function emailResponse(
     authentication: authentication ?? null,
     received_for: received_for ?? [],
     created_at: row.created_at,
+    last_event: row.status,
     attachments,
     raw: await downloadInfo(env, row, "raw.eml"),
   };
