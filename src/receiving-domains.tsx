@@ -35,7 +35,7 @@ async function cf<T>(
     throw new AppError(
       503,
       "application_error",
-      "Receiving setup requires CLOUDFLARE_EMAIL_ROUTING_TOKEN with Zone Read, Zone Settings Read, DNS Read, and Email Routing Rules Edit permissions.",
+      "Receiving setup requires CLOUDFLARE_EMAIL_ROUTING_TOKEN with Zone Read, Zone Settings Read and Edit, DNS Read and Edit, and Email Routing Rules Edit permissions.",
     );
   const response = await fetch(`https://api.cloudflare.com/client/v4${path}`, {
     ...init,
@@ -91,7 +91,7 @@ async function records(env: RoutingEnv, row: ReceivingDomain) {
   const normalized = required.map(r => ({ ...r, content: r.type === "TXT" ? txtValue(r.content) : r.content }));
   if (row.name === zone.name) return normalized;
   // The deprecated subdomain query has an undocumented response. Use the zone's
-  // authoritative routing MX/SPF template; subdomain onboarding remains in Cloudflare.
+  // authoritative routing MX/SPF template; activation uses the documented name body.
   return normalized
     .filter(
       (r) =>
@@ -171,7 +171,7 @@ async function dnsPlan(env: RoutingEnv, row: ReceivingDomain, required: DnsRecor
   return { changes, conflicts, snapshot, routingEnabled: settings.enabled, blockers: [...new Set(blockers)] };
 }
 
-async function verifyAndRoute(env: RoutingEnv, row: ReceivingDomain) {
+async function verifyDns(env: RoutingEnv, row: ReceivingDomain) {
   const required = await records(env, row);
   const existing = await cf<DnsRecord[]>(
     env,
@@ -208,16 +208,9 @@ async function verifyAndRoute(env: RoutingEnv, row: ReceivingDomain) {
       "conflict",
       "Other MX records exist. Resolve the mail-provider conflict before enabling receiving.",
     );
-  const settings = await cf<{ enabled: boolean }>(
-    env,
-    `/zones/${row.zone_id}/email/routing`,
-  );
-  if (!settings.enabled)
-    throw new AppError(
-      422,
-      "validation_error",
-      "Enable Email Routing in Cloudflare before verifying this domain.",
-    );
+}
+
+async function configureRoutingRules(env: RoutingEnv, row: ReceivingDomain) {
   const addresses = JSON.parse(row.addresses_json) as string[];
   const existingRules = await cf<Rule[]>(
     env,
@@ -231,6 +224,7 @@ async function verifyAndRoute(env: RoutingEnv, row: ReceivingDomain) {
       ),
     );
     if (match) {
+      if (!match.enabled) throw new AppError(409, "conflict", `The routing rule for ${address} is disabled. Enable it before migrating.`);
       if (
         !match.actions.some(
           (a) => a.type === "worker" && a.value?.[0] === env.WORKER_NAME,
@@ -294,10 +288,28 @@ async function verifyAndRoute(env: RoutingEnv, row: ReceivingDomain) {
     }
   }
   await env.DB.prepare(
-    "UPDATE receiving_domains SET status='verified',rules_json=? WHERE name=?",
+    "UPDATE receiving_domains SET rules_json=? WHERE name=?",
   )
     .bind(JSON.stringify(owned), row.name)
     .run();
+  row.rules_json = JSON.stringify(owned);
+}
+
+async function enableRouting(env: RoutingEnv, row: ReceivingDomain) {
+  const zone = await cf<{ name: string }>(env, `/zones/${row.zone_id}`);
+  // Sending an apex name is rejected by Cloudflare; omitting it activates the
+  // apex. Always send the full subdomain name to avoid altering apex MX records.
+  await cf(env, `/zones/${row.zone_id}/email/routing/dns`, {
+    method: "POST",
+    body: JSON.stringify(dnsName(row.name) === dnsName(zone.name) ? {} : { name: row.name }),
+  });
+}
+
+async function activateReceiving(env: RoutingEnv, row: ReceivingDomain) {
+  await verifyDns(env, row);
+  await enableRouting(env, row);
+  await verifyDns(env, row);
+  await env.DB.prepare("UPDATE receiving_domains SET status='verified' WHERE name=?").bind(row.name).run();
 }
 export const receivingAdmin = new Hono<{ Bindings: RoutingEnv }>();
 receivingAdmin.get("/", async (c) => {
@@ -424,6 +436,7 @@ receivingAdmin.get("/:name", async (c) => {
   const required = await records(c.env, row);
   const plan = await dnsPlan(c.env, row, required);
   const conflicts = plan.conflicts;
+  const zone = await cf<{ name: string }>(c.env, `/zones/${row.zone_id}`);
   return c.html(
     <Layout title="Receiving domain">
       <PageHead title={row.name}>
@@ -432,8 +445,9 @@ receivingAdmin.get("/:name", async (c) => {
       <Modal id="migrate-receiving-dns" title={`Migrate ${row.name}`}>
         <DnsMigrationForm name={row.name} plan={plan} />
       </Modal>
-      {c.req.query("routing_error") && <div class="panel error">DNS is saved. Receiving setup still needs attention: {c.req.query("routing_error")}</div>}
-      {c.req.query("dns") === "updated" && !c.req.query("routing_error") && <div class="panel">DNS changes submitted. Enable Cloudflare Email Routing, then use Migrate now to finish setup. If you kept the existing provider, choose replacement when routing is ready.</div>}
+      {c.req.query("migrated") === "true" && row.status === "verified" && <div class="panel">Receiving is enabled. The previous provider’s MX records for {row.name} have been removed.</div>}
+      {c.req.query("routing_error") && <div class="panel error">Migration did not finish: {c.req.query("routing_error")}</div>}
+      {c.req.query("dns") === "updated" && !c.req.query("routing_error") && <div class="panel">DNS records were prepared, but migration has not finished. Use Migrate now to activate receiving and remove the previous provider’s MX records.</div>}
 
       <Modal
         id="receiving-mx-records"
@@ -475,8 +489,7 @@ receivingAdmin.get("/:name", async (c) => {
             <strong>Existing mail provider detected</strong>
             <p>
               Other MX records point to{" "}
-              {conflicts.map((r) => r.content).join(", ")}. Use a subdomain or
-              deliberately migrate your mail before changing MX records.
+              {conflicts.map((r) => r.content).join(", ")}. Migrate now will remove these MX records for {row.name} and activate Cloudflare receiving.
             </p>
           </div>
         )}
@@ -491,13 +504,12 @@ receivingAdmin.get("/:name", async (c) => {
           → {c.env.WORKER_NAME}
         </p>
         <p class="muted">
-          Cloudflare Email Routing must be enabled for this domain. Configure it
-          in Cloudflare before verifying here. This page creates routing rules
-          after DNS verification. Migrate now writes the DNS changes you approve.
+          Migrate now sets up receiving rules, replaces the previous provider’s MX
+          records, and activates Cloudflare Email Routing for this domain.
         </p>
         <a
           class="button"
-          href={`https://dash.cloudflare.com/${c.env.CLOUDFLARE_ACCOUNT_ID}/${row.name}/email/routing/overview`}
+          href={`https://dash.cloudflare.com/${c.env.CLOUDFLARE_ACCOUNT_ID}/${zone.name}/email/routing/overview`}
           target="_blank"
           rel="noreferrer"
         >
@@ -521,15 +533,13 @@ receivingAdmin.get("/:name", async (c) => {
 receivingAdmin.post("/:name/migrate-dns", async (c) => {
   const row = await domain(c.env, c.req.param("name"));
   const form = await c.req.parseBody();
-  if (form.confirm_dns !== row.name || !["replace", "overlap"].includes(String(form.mx_mode)))
-    throw new AppError(422, "validation_error", "Confirm the DNS migration and select how to handle existing MX records.");
+  if (form.confirm_dns !== row.name || form.mx_mode !== "replace")
+    throw new AppError(422, "validation_error", "Confirm the DNS migration and replacement of the existing provider’s MX records.");
   const plan = await dnsPlan(c.env, row, await records(c.env, row));
   if (form.snapshot !== plan.snapshot)
     throw new AppError(409, "conflict", "DNS records changed since this preview. Reload the page and review the new migration plan.");
   if (plan.blockers.length) throw new AppError(409, "conflict", plan.blockers.join(" "));
-  if (form.mx_mode === "replace" && plan.conflicts.length && !plan.routingEnabled)
-    throw new AppError(422, "validation_error", "Enable Cloudflare Email Routing before replacing your existing provider's MX records. You can add overlapping records first.");
-  const deletes = form.mx_mode === "replace" ? plan.conflicts.map(r => ({ id: r.id })) : [];
+  const deletes = plan.conflicts.map(r => ({ id: r.id }));
   if (plan.changes.some(change => change.action === "Update" && !change.record.id) || deletes.some(record => !record.id))
     throw new AppError(409, "conflict", "Cloudflare did not return record IDs; no DNS records were changed.");
   const batch = {
@@ -537,24 +547,42 @@ receivingAdmin.post("/:name/migrate-dns", async (c) => {
     patches: plan.changes.filter(change => change.action === "Update").map(({record}) => ({ id: record.id, type: record.type, name: record.name, content: record.content, ttl: record.ttl ?? 1, ...(record.type === "MX" ? { priority: record.priority } : {}) })),
     posts: plan.changes.filter(change => change.action === "Add").map(({record}) => ({ type: record.type, name: record.name, content: record.content, ttl: record.ttl ?? 1, ...(record.type === "MX" ? { priority: record.priority } : {}) })),
   };
-  if (deletes.length || batch.patches.length || batch.posts.length) {
+  // Validate and install destinations before moving mail away from the old MX.
+  await configureRoutingRules(c.env, row);
+  const changed = deletes.length || batch.patches.length || batch.posts.length;
+  if (changed) {
     await cf(c.env, `/zones/${row.zone_id}/dns_records/batch`, { method: "POST", body: JSON.stringify(batch) });
+  }
+  try {
     await c.env.DB.prepare("UPDATE receiving_domains SET status='pending' WHERE name=?").bind(row.name).run();
-  }
-  if (plan.routingEnabled && (form.mx_mode === "replace" || !plan.conflicts.length)) {
-    try {
-      await verifyAndRoute(c.env, row);
-      return c.redirect(`/receiving-domains/${row.name}`, 303);
-    } catch (error) {
-      if (!(error instanceof AppError)) throw error;
-      return c.redirect(`/receiving-domains/${row.name}?dns=updated&routing_error=${encodeURIComponent(error.message)}`, 303);
+    await activateReceiving(c.env, row);
+  } catch (error) {
+    // Activation can fail because of missing Zone Settings Edit permission. Put
+    // back the previous provider's MX records so the user can fix it and retry.
+    let recovery = "";
+    if (deletes.length) {
+      try {
+        await cf(c.env, `/zones/${row.zone_id}/dns_records/batch`, {
+          method: "POST",
+          body: JSON.stringify({ posts: plan.conflicts.map(record => ({
+            type: "MX", name: row.name, content: record.content,
+            priority: record.priority, ttl: record.ttl ?? 1,
+          })) }),
+        });
+        recovery = " The previous provider’s MX records were restored.";
+      } catch {
+        recovery = " Restoring the previous provider’s MX records also failed. Review this domain’s DNS immediately.";
+      }
     }
+    const message = error instanceof AppError ? error.message : "Cloudflare activation could not be completed.";
+    return c.redirect(`/receiving-domains/${row.name}?routing_error=${encodeURIComponent(message + recovery + " Activation requires Zone Settings Edit permission.")}`, 303);
   }
-  return c.redirect(`/receiving-domains/${row.name}?dns=updated`, 303);
+  return c.redirect(`/receiving-domains/${row.name}?migrated=true`, 303);
 });
 receivingAdmin.post("/:name/verify", async (c) => {
   const row = await domain(c.env, c.req.param("name"));
-  await verifyAndRoute(c.env, row);
+  await configureRoutingRules(c.env, row);
+  await activateReceiving(c.env, row);
   return c.redirect(`/receiving-domains/${row.name}`, 303);
 });
 receivingAdmin.post("/:name/disable", async (c) => {
@@ -639,7 +667,6 @@ function DnsTable({ records }: { records: DnsRecord[] }) {
 }
 
 function DnsMigrationForm({ name, plan }: { name: string; plan: DnsPlan }) {
-  const canReplace = plan.routingEnabled || !plan.conflicts.length;
   return <form method="post" action={`/receiving-domains/${name}/migrate-dns`}>
     <p>Review the DNS changes for <strong>{name}</strong>. Existing SPF permissions are preserved. Other domains are unaffected.</p>
     <input type="hidden" name="snapshot" value={plan.snapshot} />
@@ -653,18 +680,14 @@ function DnsMigrationForm({ name, plan }: { name: string; plan: DnsPlan }) {
     {plan.conflicts.length > 0 ? <>
       <h3>Existing provider MX records</h3>
       <DnsTable records={plan.conflicts} />
-      <label>Handle existing MX records</label>
-      <select name="mx_mode">
-        <option value="replace" selected={canReplace} disabled={!canReplace}>Replace these MX records — move mail to Cloudflare</option>
-        <option value="overlap" selected={!canReplace}>Keep these MX records — add Cloudflare alongside them</option>
-      </select>
-      <p class="field-help">Keeping both providers can leave mail going to your old provider. Receiving verification stays blocked until the old MX records are removed.</p>
-    </> : <input type="hidden" name="mx_mode" value="overlap" />}
-    {!plan.routingEnabled && <div class="panel error">Cloudflare Email Routing is not enabled yet. You can add records now, but enable routing before moving mail away from your existing provider.</div>}
+      <p class="field-help">These MX records will be removed when you migrate {name} to Cloudflare.</p>
+    </> : null}
+    <input type="hidden" name="mx_mode" value="replace" />
+    <p>Cloudflare receiving will be activated for {name} through the API.</p>
     {!plan.changes.length && !plan.conflicts.length && <p>The required DNS records are already present. Migrate now will check routing and finish receiving setup.</p>}
     <>
-      <p class="field-help">Writing records requires DNS Edit permission. DNS changes may take time to propagate. This action also verifies receiving and creates the routing rules when Cloudflare Email Routing is enabled.</p>
-      <label class="dns-migration-confirm"><input type="checkbox" name="confirm_dns" value={name} required /> I approve the displayed DNS changes for {name} and the selected handling of existing MX records.</label>
+      <p class="field-help">Requires DNS Edit, Zone Settings Edit, and Email Routing Rules Edit permissions. DNS changes may take time to propagate.</p>
+      <label class="dns-migration-confirm"><input type="checkbox" name="confirm_dns" value={name} required /> I approve the displayed DNS changes for {name} including removal of the previous provider’s MX records.</label>
       <button class="primary" disabled={plan.blockers.length > 0}>Migrate now</button>
     </>
   </form>;

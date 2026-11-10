@@ -10,6 +10,8 @@ let existing: Record[];
 let required: Record[];
 let routingEnabled: boolean;
 let failBatch: boolean;
+let failActivation: boolean;
+let activations: {name?:string}[];
 let catchAllWrites: unknown[];
 let writes: {url: string;body: {deletes: {id: string}[];patches: Record[];posts: Record[]}}[];
 const bindings = new Proxy(env, {get(target, property, receiver) {
@@ -34,6 +36,8 @@ beforeEach(async () => {
   ];
   routingEnabled = true;
   failBatch = false;
+  failActivation = false;
+  activations = [];
   writes = [];
   catchAllWrites = [];
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -41,12 +45,18 @@ beforeEach(async () => {
     const url = new URL(request.url);
     if(url.hostname !== "api.cloudflare.com") throw Error("Unexpected network destination");
     if(request.method !== "GET") {
+      if (url.pathname.endsWith("/email/routing/dns")) {
+        const body = await request.json() as {name?: string};
+        activations.push(body);
+        if (failActivation) return Response.json({success:false,errors:[{message:"Zone Settings Write permission required"}]},{status:403});
+        return Response.json({success:true,result:{enabled:true,name:body.name ?? "example.com"}});
+      }
       if (url.pathname.endsWith("/email/routing/rules/catch_all")) {
         catchAllWrites.push(await request.json());
         return Response.json({success:true,result:{}});
       }
       expect(url.pathname).toBe(`/client/v4/zones/${zone}/dns_records/batch`);
-      writes.push({url:request.url,body:await request.json() as any});
+      writes.push({url:request.url,body:{deletes:[],patches:[],posts:[],...await request.json() as any}});
       if (!failBatch) {
         const batch = writes.at(-1)!.body;
         existing = existing.filter(record => !batch.deletes.some(deleted => deleted.id === record.id));
@@ -89,7 +99,8 @@ it("previews a domain-specific migration without changing DNS",async()=>{
   expect(html).not.toContain("added the record");
   expect(html).toContain("inbound-smtp.eu-west-1.amazonaws.com");
   expect(html).toContain("include:mailgun.org include:_spf.mx.cloudflare.net -all");
-  expect(html).toContain('value="overlap"');
+  expect(html).toContain('value="replace"');
+  expect(html).not.toContain('value="overlap"');
   expect(html).not.toContain("production.example.net");
   expect(writes).toEqual([]);
 });
@@ -111,22 +122,35 @@ it("replaces only the chosen domain's provider MX and merges SPF in one Cloudfla
   expect(writes[0]!.body.posts).toEqual([10,20,30].map((priority,i)=>({type:"MX",name,content:`route${i+1}.mx.cloudflare.net.`,ttl:1,priority})));
   expect(await env.DB.prepare("SELECT status FROM receiving_domains WHERE name=?").bind(name).first("status")).toBe("verified");
 });
-it("adds overlapping records without deleting the existing provider or other TXT records",async()=>{
+it("removes the previous provider, preserves unrelated records, and activates only the selected subdomain even when apex routing is disabled",async()=>{
+  routingEnabled=false;
   existing=existing.filter(r=>r.id!=="spf");
   const {snapshot}=await preview();
-  expect((await migrate(snapshot,"overlap")).status).toBe(303);
-  expect(writes[0]!.body.deletes).toEqual([]);
-  expect(writes[0]!.body.patches).toEqual([]);
-  expect(writes[0]!.body.posts).toContainEqual({type:"TXT",name,content:"v=spf1 include:_spf.mx.cloudflare.net ~all",ttl:1});
+  const response = await migrate(snapshot);
+  expect(response.status).toBe(303);
+  expect(response.headers.get("Location")).toBe(`${path}?migrated=true`);
+  expect(activations).toEqual([{name}]);
+  expect(existing.filter(r=>r.name===name && r.type==="MX").map(r=>r.content)).toEqual([
+    "route1.mx.cloudflare.net.","route2.mx.cloudflare.net.","route3.mx.cloudflare.net.",
+  ]);
+  expect(existing).toContainEqual({id:"apex",type:"MX",name:"example.com",content:"production.example.net",priority:10,ttl:300});
+  expect(existing).toContainEqual({id:"verification",type:"TXT",name,content:"unrelated-verification",ttl:300});
+  expect(await env.DB.prepare("SELECT status FROM receiving_domains WHERE name=?").bind(name).first("status")).toBe("verified");
 });
-it("allows overlap preparation but blocks removing a working provider before routing is enabled",async()=>{
+it("restores the old provider and reports incomplete migration if activation is rejected",async()=>{
   routingEnabled=false;
-  const {snapshot,html}=await preview();
-  expect(html).toContain("Cloudflare Email Routing is not enabled yet");
-  expect((await migrate(snapshot)).status).toBe(422);
-  expect(writes).toEqual([]);
-  expect((await migrate(snapshot,"overlap")).status).toBe(303);
-  expect(writes[0]!.body.deletes).toEqual([]);
+  failActivation=true;
+  const {snapshot}=await preview();
+  const response=await migrate(snapshot);
+  expect(response.status).toBe(303);
+  expect(decodeURIComponent(response.headers.get("Location")!)).toContain("previous provider’s MX records were restored");
+  expect(existing).toContainEqual(expect.objectContaining({name,type:"MX",content:"inbound-smtp.eu-west-1.amazonaws.com",priority:10}));
+  expect(existing).toContainEqual({id:"apex",type:"MX",name:"example.com",content:"production.example.net",priority:10,ttl:300});
+  expect(await env.DB.prepare("SELECT status FROM receiving_domains WHERE name=?").bind(name).first("status")).toBe("pending");
+  failActivation=false;
+  const refreshed=await preview();
+  expect((await migrate(refreshed.snapshot)).headers.get("Location")).toBe(`${path}?migrated=true`);
+  expect(existing.filter(r=>r.name===name && r.type==="MX")).toHaveLength(3);
 });
 it.each(["duplicate SPF","CNAME"])("blocks ambiguous DNS before any writes: %s",async(reason)=>{
   existing.push(reason==="duplicate SPF" ? {id:"second-spf",type:"TXT",name,content:"v=spf1 -all"} : {id:"cname",type:"CNAME",name,content:"alias.example.net"});
@@ -143,7 +167,7 @@ it("keeps domain status unchanged if Cloudflare rejects the batch",async()=>{
 it("does not duplicate DNS records when the target configuration is already present",async()=>{
   existing=required.map((r,i)=>({...r,id:String(i),name,content:r.type==="TXT"?"v=spf1 include:_spf.mx.cloudflare.net ~all":r.content}));
   const {snapshot}=await preview();
-  expect((await migrate(snapshot,"overlap")).status).toBe(303);
+  expect((await migrate(snapshot)).status).toBe(303);
   expect(writes).toEqual([]);
 });
 
@@ -166,6 +190,7 @@ it("automatically uses catch-all for apex domains and installs it when migration
     body:new URLSearchParams({snapshot,mx_mode:"replace",confirm_dns:"example.com"}),
   }),bindings);
   expect(migrated.status).toBe(303);
+  expect(activations).toEqual([{}]);
   expect(catchAllWrites).toEqual([{name:"open-resend example.com",enabled:true,matchers:[{type:"all"}],actions:[{type:"worker",value:[env.WORKER_NAME]}]}]);
   expect(await env.DB.prepare("SELECT status FROM receiving_domains WHERE name='example.com'").first("status")).toBe("verified");
 });

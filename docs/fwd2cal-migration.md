@@ -81,9 +81,12 @@ rejection of a third, untrusted signing secret.
 7. Verify public DNS, a signed callback to Firebase, successful dispatch/fetch,
    ICS processing, and an outgoing reply before reporting migration complete.
 
-The current OAuth credential cannot read or edit arbitrary DNS records. A
-zone-scoped token is pending for the DNS test and cutover. No MX change has been
-made.
+A zone-scoped routing token is installed and saved in the ignored local secrets
+file. Cloudflare MX/SPF records have been added to `r.fwd2cal.com`, but the old
+Amazon/Resend MX remains. Apex `fwd2cal.com` MX records are unchanged. Before
+retrying **Migrate now**, grant the routing token **Zone Settings Edit** so the
+new API activation step can succeed. The updated flow removes only the selected
+domain's old MX records and attempts to restore them if activation fails.
 
 ## Local operational state
 

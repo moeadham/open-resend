@@ -434,37 +434,35 @@ message limit**. Open Resend does not promise Resend's larger attachment limits.
 ### Receiving domains and DNS
 
 1. Provide `CLOUDFLARE_EMAIL_ROUTING_TOKEN` with **Zone Read**, **Zone Settings
-   Read**, **DNS Read**, and **Email Routing Rules Edit** access to the zones you
-   will use. Exporting this environment variable for `npm run deploy` installs it
-   as an encrypted Worker secret. Existing runtime tokens are preserved when it
-   is omitted. It is separate from the sending-domain discovery token.
+   Read and Edit**, **DNS Read and Edit**, and **Email Routing Rules Edit** access
+   to the zones you will use. Exporting this environment variable for
+   `npm run deploy` installs it as an encrypted Worker secret. Existing runtime
+   tokens are preserved when it is omitted. It is separate from the sending-domain
+   discovery token. Cloudflare calls the Zone Settings Edit permission
+   “Zone Settings Write” in its API documentation.
 2. In **Domains → Receiving domains → Add domain**, enter the domain and select
    **Continue**. The application detects its Cloudflare zone: an apex domain
    automatically uses a catch-all, while a subdomain prompts for explicit
    receiving addresses on the next step, such as `calendar@test.visibl.ai`.
-   **Migrate now** completes DNS verification and installs the catch-all or
-   address-specific routing once Cloudflare Email Routing is enabled.
-3. Enable/onboard Email Routing for that domain in Cloudflare. Open Resend shows
-   Cloudflare's MX/SPF record requirements with copy controls. Add the records at
-   your DNS provider, then click **I've added the record**. Open Resend checks for
-   conflicting MX records and creates the routes to this installation's Worker.
-   DNS records and existing routes to other destinations are never replaced.
+3. Select **Migrate now**, review the DNS preview, and confirm. The action installs
+   receiving rules, adds or updates Cloudflare's DNS records, removes the previous
+   provider's MX records for the selected domain, and activates receiving through
+   Cloudflare's API. Subdomain activation explicitly sends that subdomain's name;
+   it does not enable the apex or replace the apex MX records. Existing SPF
+   permissions are merged into one SPF record. Existing routes to other
+   destinations block migration instead of being replaced.
 4. Create an **email.received** webhook. The modal takes an endpoint URL and event
    selection. The new detail page displays the generated `whsec_` secret, masked
    by default with copy/reveal controls. Configure that secret in your callback.
 
 Disabling a receiving domain removes only its recorded, still-owned routing
-rules; DNS records remain. **Migrate now** previews the DNS changes and requires
-explicit confirmation. Choose replacement to remove the selected domain's old MX
-records, or overlap to retain them while adding Cloudflare records. Existing SPF
-permissions are merged rather than publishing a second SPF record. DNS Edit
-permission is required for this button. The action uses Cloudflare's transactional
-DNS batch API and rejects changed previews. Once routing is enabled and the old
-MX conflict is resolved, the same action verifies receiving and creates routing
-rules; no manual “I’ve added the record” step is needed.
-Cloudflare routing must be enabled before removing an existing provider's MX
-records. The receiving setup requires Cloudflare onboarding rather than silently
-enabling routing on a domain with an existing mail provider. The deprecated Cloudflare DNS `subdomain` query is not used.
+rules; DNS records remain. **Migrate now** uses Cloudflare's transactional DNS
+batch API and rejects changed previews. Activation is a separate API operation:
+if it fails after removing old MX records, Open Resend attempts to restore those
+records and reports whether restoration succeeded. The domain stays pending
+until activation and DNS verification succeed. DNS propagation is not atomic,
+and changes may take time to reach mail senders. No manual “I've added the
+record” step is required. The deprecated Cloudflare DNS `subdomain` query is not used.
 
 ### Authentication release gate
 
