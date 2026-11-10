@@ -28,10 +28,12 @@ try {
   assert(config.name === "cloudflare-resend-test", "worker name was not rendered");
   assert(config.routes[0].pattern === "mail-admin.example.com", "admin route was not rendered from Terraform");
   assert(config.routes[1].pattern === "mail-api.example.com", "API route was not rendered from deployment settings");
-  assert(config.routes[2].pattern === "mail.example.com", "first unsubscribe route was not rendered");
-  assert(config.routes[3].pattern === "mail.another-domain.com", "second unsubscribe route was not rendered");
+  assert(config.routes.some(route => route.pattern === "mail.example.com"), "first unsubscribe route was not rendered");
+  assert(config.routes.some(route => route.pattern === "mail.another-domain.com"), "second unsubscribe route was not rendered");
   assert(config.vars.UNSUBSCRIBE_HOSTNAMES === JSON.stringify({ "example.com": "mail.example.com", "another-domain.com": "mail.another-domain.com" }), "unsubscribe hostname map was not rendered");
   assert(config.vars.CLOUDFLARE_ACCOUNT_ID === "00000000000000000000000000000001", "Cloudflare account ID was not rendered");
+  assert(config.vars.API_HOSTNAME_ALIASES === "resend-api.example.com", "API hostname aliases were not rendered");
+  assert(config.routes.some(route => route.pattern === "resend-api.example.com" && route.custom_domain), "API alias custom domain was not rendered");
   assert(config.vars.ACCESS_AUD === "example-access-audience", "Access audience was not rendered");
   assert(config.vars.ACCESS_TEAM_DOMAIN === "example.cloudflareaccess.com", "Access team domain was not rendered");
   assert(config.vars.ALLOW_LOCAL_ADMIN === "false", "production config must disable the local bypass");
@@ -41,6 +43,11 @@ try {
   assert(config.vars.EMAIL_EVENTS_QUEUE_NAME === config.queues.consumers[1].queue, "email-event routing does not match the configured queue");
   assert(config.vars.DEAD_LETTER_QUEUE_NAME === config.queues.consumers[2].queue, "dead-letter routing does not match the configured queue");
 
+  assert(config.queues.consumers[3].queue === config.vars.WEBHOOK_QUEUE_NAME, "webhook routing does not match the configured queue");
+  assert(config.queues.producers.find(p=>p.binding==="WEBHOOK_QUEUE").queue === config.vars.WEBHOOK_QUEUE_NAME, "webhook producer queue differs");
+  assert(config.r2_buckets[0].bucket_name === "cloudflare-resend-test-email", "private email storage must use the installation name");
+  assert(config.vars.WORKER_NAME === config.name, "receiving routing must use the deployed Worker name");
+  assert(config.vars.INBOUND_AUTH_RESULTS_VERIFIED === "false", "unverified receiving authentication must remain fail-closed");
   console.log("Deployment configuration rendering verified.");
 } finally {
   rmSync(temporaryDirectory, { recursive: true, force: true });

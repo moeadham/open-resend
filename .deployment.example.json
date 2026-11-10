@@ -12,5 +12,9 @@
   "environment": "production",
   "deliveryQueue": "cloudflare-resend-deliveries",
   "deadLetterQueue": "cloudflare-resend-deliveries-dlq",
-  "emailEventsQueue": "cloudflare-resend-email-events"
+  "emailEventsQueue": "cloudflare-resend-email-events",
+  "webhookQueue": "cloudflare-resend-webhooks",
+  "emailBucket": "cloudflare-resend-email",
+  "inboundAuthResultsVerified": false,
+  "apiHostnameAliases": []
 }

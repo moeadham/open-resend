@@ -15,7 +15,8 @@ export function isAdminRequest(request: Request, env: Env): boolean {
 
 export function isApiRequest(request: Request, env: Env): boolean {
   const host = hostname(request);
-  if (host === env.API_HOSTNAME.toLowerCase() || (isLocalHost(host) && String(env.ENVIRONMENT) !== "production")) return true;
+  const apiHosts = [env.API_HOSTNAME, ...(env.API_HOSTNAME_ALIASES ?? "").split(",")];
+  if (apiHosts.some((value) => value.trim().toLowerCase() === host) || (isLocalHost(host) && String(env.ENVIRONMENT) !== "production")) return true;
   if (!new URL(request.url).pathname.startsWith("/unsubscribe/")) return false;
   try {
     return Object.values(parseUnsubscribeHostnames(env.UNSUBSCRIBE_HOSTNAMES)).includes(host);

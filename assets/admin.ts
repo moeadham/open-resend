@@ -144,7 +144,7 @@ for (const form of document.querySelectorAll<HTMLFormElement>("form[data-confirm
 for (const button of document.querySelectorAll<HTMLButtonElement>("[data-copy-value], [data-copy-target]")) {
   button.addEventListener("click", async () => {
     const target = button.dataset.copyTarget ? document.getElementById(button.dataset.copyTarget) : null;
-    const value = button.dataset.copyValue ?? (target instanceof HTMLInputElement ? target.value : "");
+    const value = button.dataset.copyValue ?? (target instanceof HTMLInputElement ? target.value : target?.textContent ?? "");
     if (!value) return;
     try {
       await navigator.clipboard.writeText(value);
@@ -179,7 +179,8 @@ for (const button of document.querySelectorAll<HTMLButtonElement>("[data-secret-
     const reveal = field.type === "password";
     field.type = reveal ? "text" : "password";
     button.setAttribute("aria-pressed", String(reveal));
-    button.setAttribute("aria-label", reveal ? "Hide API key" : "Show API key");
+    button.setAttribute("aria-label", `${reveal ? "Hide" : "Show"} ${button.dataset.secretLabel ?? "API key"}`);
+    if (button.dataset.secretLabel) button.textContent = reveal ? "Hide" : "Show";
   });
 }
 
@@ -312,4 +313,26 @@ for (const dialog of document.querySelectorAll<HTMLDialogElement>("dialog.modal"
     }
   });
   if (dialog.dataset.autoOpen === "true") openDialog(dialog.id);
+}
+
+// Keep the event picker inside the modal: a body portal is inert behind a dialog.
+for (const form of document.querySelectorAll<HTMLFormElement>("[data-webhook-form]")) {
+  const endpoint = form.querySelector<HTMLInputElement>("[name=endpoint]")!;
+  const value = form.querySelector<HTMLInputElement>("[name=event]")!;
+  const submit = form.querySelector<HTMLButtonElement>("button[type=submit]")!;
+  const picker = form.querySelector<HTMLButtonElement>("[data-webhook-event-trigger]")!;
+  const menu = form.querySelector<HTMLElement>("#webhook-event-options")!;
+  const search = form.querySelector<HTMLInputElement>("[data-webhook-event-search]")!;
+  const option = form.querySelector<HTMLButtonElement>("[data-webhook-event-option]")!;
+  const empty = form.querySelector<HTMLElement>("[data-webhook-event-empty]")!;
+  const close = () => { menu.hidden = true; picker.setAttribute("aria-expanded", "false"); };
+  const update = () => { picker.disabled = !endpoint.value || !endpoint.validity.valid; submit.disabled = picker.disabled || value.value !== "email.received"; if (picker.disabled) close(); };
+  picker.addEventListener("click", () => { const open = menu.hidden; menu.hidden = !open; picker.setAttribute("aria-expanded", String(open)); if (open) search.focus(); });
+  search.addEventListener("input", () => { option.hidden = !"email.received".includes(search.value.toLowerCase()); empty.hidden = !option.hidden; });
+  option.addEventListener("click", () => { value.value = "email.received"; option.setAttribute("aria-selected", "true"); form.querySelector<HTMLElement>("[data-webhook-event-label]")!.textContent = "email.received"; close(); picker.focus(); update(); });
+  menu.addEventListener("keydown", event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); picker.focus(); } else if (event.key === "ArrowDown" && !option.hidden) { event.preventDefault(); option.focus(); } else if (event.key === "Enter" && event.target === search && !option.hidden) { event.preventDefault(); option.click(); } });
+  form.addEventListener("input", update);
+  document.addEventListener("pointerdown", event => { if (event.target instanceof Node && !form.querySelector("[data-webhook-event-picker]")?.contains(event.target)) close(); });
+  form.addEventListener("submit", event => { if (value.value !== "email.received") event.preventDefault(); });
+  update();
 }

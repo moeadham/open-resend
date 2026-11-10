@@ -8,9 +8,10 @@ export default defineWorkersConfig({
     testTimeout: 180_000,
     poolOptions: {
       workers: {
+        singleWorker: true,
         wrangler: { configPath: "./wrangler.jsonc" },
         miniflare: {
-          compatibilityDate: "2025-05-08",
+          compatibilityDate: "2025-09-06",
           bindings: { TEST_MIGRATIONS: migrations },
         },
       },

@@ -23,7 +23,9 @@ export type EmailEventMessage = {
   };
 };
 
-export type QueueBody = DeliveryQueueMessage | BroadcastQueueMessage | EmailEventMessage;
+export type TransactionalQueueMessage = { transactionalId: string };
+export type WebhookQueueMessage = { webhookDeliveryId: string };
+export type QueueBody = DeliveryQueueMessage | BroadcastQueueMessage | EmailEventMessage | TransactionalQueueMessage | WebhookQueueMessage;
 
 export type SegmentRow = {
   id: string;

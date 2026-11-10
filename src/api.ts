@@ -1,3 +1,7 @@
+import { bodyLimit } from "hono/body-limit";
+import { transactionalApi } from "./transactional-api";
+import { webhooksApi } from "./webhooks";
+import { downloadEmailContent } from "./transactional-storage";
 import { Hono, type Context, type Next } from "hono";
 import { requireApiKey } from "./auth";
 import { enqueueBroadcast } from "./delivery";
@@ -25,7 +29,7 @@ type JsonObject = Record<string, unknown>;
 
 export const apiApp = new Hono<Bindings>();
 
-apiApp.onError((error) => appErrorResponse(error));
+apiApp.onError((error) => { if (!(error instanceof AppError)) console.error("API request failed", error); return appErrorResponse(error); });
 apiApp.notFound(() => Response.json({ name: "not_found", message: "Route not found.", statusCode: 404 }, { status: 404 }));
 
 apiApp.use("/unsubscribe/*", async (c, next) => {
@@ -117,8 +121,12 @@ apiApp.post("/unsubscribe/:token", async (c) => {
   }));
 });
 
+apiApp.get("/email-content/:id/:part", (c) => downloadEmailContent(c.req.raw,c.env,c.req.param("id"),c.req.param("part")));
+apiApp.use("/emails/*", bodyLimit({ maxSize: 36 * 1024 * 1024, onError: c => c.json({name:"validation_error",message:"Email request is too large.",statusCode:413},413) }));
 apiApp.use("*", requireApiKey);
 apiApp.use("*", idempotencyMiddleware);
+apiApp.route("/emails", transactionalApi);
+apiApp.route("/webhooks", webhooksApi);
 
 apiApp.post("/segments", async (c) => {
   const body = await jsonBody(c.req.raw);
@@ -673,17 +681,18 @@ function isUniqueError(error: unknown): boolean {
 }
 
 async function idempotencyMiddleware(c: Context<Bindings>, next: Next): Promise<Response | void> {
-  if (!["POST", "PATCH", "DELETE"].includes(c.req.method) || !c.req.path.startsWith("/broadcasts")) {
+  if (!["POST", "PATCH", "DELETE"].includes(c.req.method) || !(c.req.path.startsWith("/broadcasts") || c.req.path === "/emails")) {
     await next();
     return;
   }
-  const key = c.req.header("Idempotency-Key");
+  const rawKey = c.req.header("Idempotency-Key");
+  const key = rawKey && c.req.path === "/emails" ? `transactional:${c.get("apiKeyId")}:${rawKey}` : rawKey;
   if (!key) {
     await next();
     return;
   }
-  if (key.length > 256) throw new AppError(422, "invalid_parameter", "Idempotency-Key is too long.");
-  const bodyText = await c.req.raw.clone().text();
+  if ((rawKey?.length ?? 0) > 256) throw new AppError(422, "invalid_parameter", "Idempotency-Key is too long.");
+  const bodyText = c.req.path === "/emails" ? await c.req.text() : await c.req.raw.clone().text();
   const requestHash = await sha256(`${c.req.method}\n${c.req.path}\n${bodyText}`);
   await c.env.DB.prepare("DELETE FROM idempotency_keys WHERE expires_at <= ?").bind(nowIso()).run();
   const createdAt = nowIso();

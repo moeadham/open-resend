@@ -83,7 +83,7 @@ async function teardown() {
     fail(`D1 ${deployment.d1DatabaseId} is now named ${database.name}; expected ${deployment.d1DatabaseName}.`);
   }
 
-  const queueNames = [deployment.deliveryQueue, deployment.deadLetterQueue, deployment.emailEventsQueue];
+  const queueNames = [deployment.deliveryQueue, deployment.deadLetterQueue, deployment.emailEventsQueue, deployment.webhookQueue ?? `${deployment.workerName}-webhooks`];
   const existingQueues = parseQueueNames(command("npx", ["--no-install", "wrangler", "queues", "list"], {
     env: cloudflareEnv,
     quiet: true,
@@ -131,6 +131,14 @@ async function teardown() {
     : "\nYou will be asked about each deletion. Press Enter or answer n to keep an item.");
 
   const retained = [];
+  if (deployment.emailBucket) {
+    const listing = command("npx", ["--no-install", "wrangler", "r2", "bucket", "list"], {env:cloudflareEnv,quiet:true});
+    if ([...listing.matchAll(/^name:\s+(\S+)/gm)].some(match=>match[1]===deployment.emailBucket)) retain(retained, `private R2 bucket ${deployment.emailBucket}`, "email content is preserved; export or remove this bucket explicitly in Cloudflare");
+  }
+  if (database && deployment.emailBucket) {
+    const routing = jsonCommand("npx", ["--no-install", "wrangler", "d1", "execute", deployment.d1DatabaseId, "--remote", "--json", "--command", "SELECT name FROM receiving_domains WHERE rules_json != '[]'"], {env:cloudflareEnv});
+    if (routing.some(result=>result.results?.length)) fail("Disable receiving domains in the admin before teardown. Their owned Cloudflare routing rules must be removed before deleting the Worker.");
+  }
 
   section("Deleting Email Sending event subscriptions");
   for (const subscription of managedSubscriptions) {
@@ -175,6 +183,7 @@ async function teardown() {
     }
   }
 
+  console.log("Receiving routing rules and private R2 email storage are retained; remove owned routes in Cloudflare before deleting the Worker.");
   section("Deleting queues");
   for (const name of queueNames) {
     if (!existingQueues.has(name)) continue;
@@ -320,6 +329,7 @@ async function main() {
     delivery: existingDeployment?.deliveryQueue ?? `${workerName}-deliveries`,
     deadLetter: existingDeployment?.deadLetterQueue ?? `${workerName}-deliveries-dlq`,
     emailEvents: existingDeployment?.emailEventsQueue ?? `${workerName}-email-events`,
+    webhooks: existingDeployment?.webhookQueue ?? `${workerName}-webhooks`,
   };
   const existingQueues = parseQueueNames(command("npx", ["--no-install", "wrangler", "queues", "list"], {
     env: accountEnv(account.id),
@@ -330,6 +340,10 @@ async function main() {
   for (const name of Object.values(queueNames)) {
     console.log(existingQueues.has(name) ? `✓ Queue ${name} already exists` : `• Queue ${name} will be created`);
   }
+
+  const emailBucket = existingDeployment?.emailBucket ?? `${workerName}-email`;
+  const bucketListing = command("npx", ["--no-install", "wrangler", "r2", "bucket", "list"], { env: accountEnv(account.id), quiet: true });
+  const bucketExists = [...bucketListing.matchAll(/^name:\s+(\S+)/gm)].some(match => match[1] === emailBucket);
 
   section("Checking application");
   command("npm", ["run", "check"]);
@@ -361,6 +375,7 @@ async function main() {
   for (const domain of sendingDomains) console.log(`Unsubscribe (${domain}): https://${unsubscribeHostnames[domain]}`);
   console.log(`D1:                   ${existingDatabase ? "reuse" : "create"} ${databaseName}`);
   for (const name of Object.values(queueNames)) console.log(`Queue:                ${existingQueues.has(name) ? "reuse" : "create"} ${name}`);
+  console.log(`R2 email storage:     ${bucketExists ? "reuse" : "create"} ${emailBucket}`);
   console.log("Access:               apply the validated Terraform plan");
   console.log("Worker secret:        install scoped Email Sending token");
   console.log(`Image uploads:        ${imagesToken ? "install scoped Images token" : "not configured (existing Worker secrets are preserved)"}`);
@@ -391,6 +406,8 @@ async function main() {
     if (!existingQueues.has(name)) command("npx", ["--no-install", "wrangler", "queues", "create", name], { env: accountEnv(account.id) });
   }
 
+  if (!bucketExists) command("npx", ["--no-install", "wrangler", "r2", "bucket", "create", emailBucket], { env: accountEnv(account.id) });
+
   const deployment = {
     accountId: account.id,
     workerName,
@@ -403,6 +420,9 @@ async function main() {
     deliveryQueue: queueNames.delivery,
     deadLetterQueue: queueNames.deadLetter,
     emailEventsQueue: queueNames.emailEvents,
+    webhookQueue: queueNames.webhooks,
+    emailBucket,
+    inboundAuthResultsVerified: existingDeployment?.inboundAuthResultsVerified === true,
   };
   writeFileSync(deploymentPath, `${JSON.stringify(deployment, null, 2)}\n`, { mode: 0o600 });
 
@@ -425,6 +445,11 @@ async function main() {
   if (imagesToken) {
     section("Installing optional Cloudflare Images secret");
     commandWithInput("npx", ["--no-install", "wrangler", "secret", "put", "CLOUDFLARE_IMAGES_TOKEN", "--config", "wrangler.deploy.jsonc"], `${imagesToken}\n`, { env: accountEnv(account.id) });
+  }
+
+  if (process.env.CLOUDFLARE_EMAIL_ROUTING_TOKEN) {
+    section("Installing receiving setup token");
+    commandWithInput("npx", ["--no-install", "wrangler", "secret", "put", "CLOUDFLARE_EMAIL_ROUTING_TOKEN", "--config", "wrangler.deploy.jsonc"], `${process.env.CLOUDFLARE_EMAIL_ROUTING_TOKEN}\n`, { env: accountEnv(account.id) });
   }
 
   section("Configuring Email Sending events");

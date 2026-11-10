@@ -14,6 +14,9 @@ const adminHostname = output(terraformOutputs, "admin_hostname");
 const accessAud = output(terraformOutputs, "access_aud");
 const accessTeamDomain = output(terraformOutputs, "access_team_domain");
 const apiHostname = requireHostname(deployment.apiHostname, "apiHostname");
+if (deployment.apiHostnameAliases !== undefined && !Array.isArray(deployment.apiHostnameAliases)) fail("apiHostnameAliases must be an array of hostnames.");
+const apiHostnameAliases = (deployment.apiHostnameAliases ?? []).map((hostname) => requireHostname(hostname, "apiHostnameAliases"));
+if (apiHostnameAliases.includes(adminHostname)) fail("An API alias cannot be the Access-protected admin hostname.");
 const unsubscribeHostnames = requireHostnameMap(deployment.unsubscribeHostnames, "unsubscribeHostnames");
 requireHostname(adminHostname, "Terraform output admin_hostname");
 
@@ -28,7 +31,9 @@ if (!isUuid(deployment.d1DatabaseId) || deployment.d1DatabaseId === "00000000-00
 const deliveryQueue = optionalString(deployment.deliveryQueue, "cloudflare-resend-deliveries");
 const deadLetterQueue = optionalString(deployment.deadLetterQueue, "cloudflare-resend-deliveries-dlq");
 const emailEventsQueue = optionalString(deployment.emailEventsQueue, "cloudflare-resend-email-events");
-if (new Set([deliveryQueue, deadLetterQueue, emailEventsQueue]).size !== 3) fail("Delivery, dead-letter, and email-events queues must have distinct names.");
+const webhookQueue = optionalString(deployment.webhookQueue, `${deployment.workerName ?? "cloudflare-resend"}-webhooks`);
+const emailBucket = optionalString(deployment.emailBucket, `${deployment.workerName ?? "cloudflare-resend"}-email`);
+if (new Set([deliveryQueue, deadLetterQueue, emailEventsQueue, webhookQueue]).size !== 4) fail("Delivery, dead-letter, and email-events queues must have distinct names.");
 
 const config = {
   ...base,
@@ -36,6 +41,7 @@ const config = {
   routes: deduplicateRoutes([
     { pattern: adminHostname, custom_domain: true },
     { pattern: apiHostname, custom_domain: true },
+    ...apiHostnameAliases.map((pattern) => ({ pattern, custom_domain: true })),
     ...Object.values(unsubscribeHostnames).map((pattern) => ({ pattern, custom_domain: true })),
   ]),
   d1_databases: base.d1_databases.map((database) =>
@@ -47,23 +53,29 @@ const config = {
         }
       : database,
   ),
+  r2_buckets: [{ binding: "EMAIL_STORAGE", bucket_name: emailBucket }],
   queues: {
     producers: base.queues.producers.map((producer) =>
-      producer.binding === "DELIVERY_QUEUE" ? { ...producer, queue: deliveryQueue } : producer,
+      producer.binding === "DELIVERY_QUEUE" ? { ...producer, queue: deliveryQueue } : producer.binding === "WEBHOOK_QUEUE" ? { ...producer, queue: webhookQueue } : producer,
     ),
     consumers: [
       { ...base.queues.consumers[0], queue: deliveryQueue, dead_letter_queue: deadLetterQueue },
       { ...base.queues.consumers[1], queue: emailEventsQueue },
       { ...base.queues.consumers[2], queue: deadLetterQueue },
+      { ...base.queues.consumers[3], queue: webhookQueue },
     ],
   },
   vars: {
     ...base.vars,
+    WORKER_NAME: optionalString(deployment.workerName, "cloudflare-resend"),
+    INBOUND_AUTH_RESULTS_VERIFIED: deployment.inboundAuthResultsVerified === true ? "true" : "false",
+    WEBHOOK_QUEUE_NAME: webhookQueue,
     DELIVERY_QUEUE_NAME: deliveryQueue,
     DEAD_LETTER_QUEUE_NAME: deadLetterQueue,
     EMAIL_EVENTS_QUEUE_NAME: emailEventsQueue,
     ADMIN_HOSTNAME: adminHostname,
     API_HOSTNAME: apiHostname,
+    API_HOSTNAME_ALIASES: apiHostnameAliases.join(","),
     CLOUDFLARE_ACCOUNT_ID: requireAccountId(deployment.accountId),
     UNSUBSCRIBE_HOSTNAMES: JSON.stringify(unsubscribeHostnames),
     ACCESS_TEAM_DOMAIN: accessTeamDomain,

@@ -1,3 +1,4 @@
+import { applyTransactionalProviderEvent } from "./outgoing-email";
 import { EmailMessage } from "cloudflare:email";
 import { createMimeMessage, Mailbox } from "mimetext/browser";
 import { EMAIL_IMAGE_ROW_CSS } from "./email-layout";
@@ -338,8 +339,8 @@ export async function processEmailEvent(message: Message<EmailEventMessage>, env
     return;
   }
   const inserted = await env.DB.prepare(
-    "INSERT OR IGNORE INTO email_events (event_id, message_id, event_type, received_at) VALUES (?, ?, ?, ?)",
-  ).bind(eventId, event.payload.messageId ?? null, event.type, nowIso()).run();
+    "INSERT OR IGNORE INTO email_events (event_id, message_id, event_type, received_at, payload_json) VALUES (?, ?, ?, ?, ?)",
+  ).bind(eventId, event.payload.messageId ?? null, event.type, nowIso(), JSON.stringify(event)).run();
   if (!inserted.meta.changes) {
     message.ack();
     return;
@@ -348,6 +349,7 @@ export async function processEmailEvent(message: Message<EmailEventMessage>, env
   const status = event.type.split(".").at(-1) ?? event.payload.delivery?.status;
   const messageId = event.payload.messageId;
   if (messageId && ["delivered", "deferred", "bounced", "failed", "rejected", "complained"].includes(status ?? "")) {
+    await applyTransactionalProviderEvent(env, event);
     const reason = event.payload.bounce?.reason ?? event.payload.failure?.reason ?? event.payload.rejection?.detail ?? null;
     await env.DB.prepare(
       "UPDATE deliveries SET status = ?, last_error = ?, updated_at = ? WHERE message_id = ?",

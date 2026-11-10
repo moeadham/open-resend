@@ -3,7 +3,10 @@
   "name": "cloudflare-resend",
   "main": "src/index.tsx",
   "compatibility_date": "2026-10-06",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat",
+    "global_fetch_strictly_public"
+  ],
   "assets": {
     "directory": "./dist-assets",
     "binding": "ASSETS",
@@ -19,15 +22,30 @@
   ],
   "durable_objects": {
     "bindings": [
-      { "name": "BROADCAST_SCHEDULE", "class_name": "BroadcastSchedule" }
+      {
+        "name": "BROADCAST_SCHEDULE",
+        "class_name": "BroadcastSchedule"
+      }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["BroadcastSchedule"] }
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "BroadcastSchedule"
+      ]
+    }
   ],
   "queues": {
     "producers": [
-      { "binding": "DELIVERY_QUEUE", "queue": "cloudflare-resend-deliveries" }
+      {
+        "binding": "DELIVERY_QUEUE",
+        "queue": "cloudflare-resend-deliveries"
+      },
+      {
+        "binding": "WEBHOOK_QUEUE",
+        "queue": "cloudflare-resend-webhooks"
+      }
     ],
     "consumers": [
       {
@@ -48,11 +66,18 @@
         "max_batch_size": 10,
         "max_batch_timeout": 5,
         "max_retries": 3
+      },
+      {
+        "queue": "cloudflare-resend-webhooks",
+        "max_batch_size": 10,
+        "max_retries": 3
       }
     ]
   },
   "send_email": [
-    { "name": "EMAIL" }
+    {
+      "name": "EMAIL"
+    }
   ],
   "vars": {
     "DELIVERY_QUEUE_NAME": "cloudflare-resend-deliveries",
@@ -65,10 +90,28 @@
     "ACCESS_TEAM_DOMAIN": "example.cloudflareaccess.com",
     "ACCESS_AUD": "local-development-audience",
     "ENVIRONMENT": "development",
-    "ALLOW_LOCAL_ADMIN": "true"
+    "ALLOW_LOCAL_ADMIN": "true",
+    "WEBHOOK_QUEUE_NAME": "cloudflare-resend-webhooks",
+    "INBOUND_AUTH_RESULTS_VERIFIED": "false",
+    "WORKER_NAME": "cloudflare-resend",
+    "API_HOSTNAME_ALIASES": ""
   },
   "observability": {
     "enabled": true,
-    "logs": { "enabled": true, "head_sampling_rate": 1 }
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    }
+  },
+  "r2_buckets": [
+    {
+      "binding": "EMAIL_STORAGE",
+      "bucket_name": "cloudflare-resend-email"
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "* * * * *"
+    ]
   }
 }

@@ -11,5 +11,8 @@
   "environment": "production",
   "deliveryQueue": "cloudflare-resend-test-deliveries",
   "deadLetterQueue": "cloudflare-resend-test-deliveries-dlq",
-  "emailEventsQueue": "cloudflare-resend-test-email-events"
+  "emailEventsQueue": "cloudflare-resend-test-email-events",
+  "apiHostnameAliases": [
+    "resend-api.example.com"
+  ]
 }
