@@ -452,9 +452,15 @@ message limit**. Open Resend does not promise Resend's larger attachment limits.
    by default with copy/reveal controls. Configure that secret in your callback.
 
 Disabling a receiving domain removes only its recorded, still-owned routing
-rules; DNS records remain. The receiving setup deliberately requires Cloudflare
-onboarding rather than silently enabling routing on a domain with an existing
-mail provider. The deprecated Cloudflare DNS `subdomain` query is not used.
+rules; DNS records remain. **Migrate now** previews the DNS changes and requires
+explicit confirmation. Choose replacement to remove the selected domain's old MX
+records, or overlap to retain them while adding Cloudflare records. Existing SPF
+permissions are merged rather than publishing a second SPF record. DNS Edit
+permission is required for this button. The action uses Cloudflare's transactional
+DNS batch API, rejects changed previews, and does not mark the domain verified.
+Cloudflare routing must be enabled before removing an existing provider's MX
+records. The receiving setup requires Cloudflare onboarding rather than silently
+enabling routing on a domain with an existing mail provider. The deprecated Cloudflare DNS `subdomain` query is not used.
 
 ### Authentication release gate
 
