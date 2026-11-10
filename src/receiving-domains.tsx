@@ -321,13 +321,11 @@ receivingAdmin.get("/", async (c) => {
         <form method="post">
           <label>Domain name</label>
           <input name="name" placeholder="test.visibl.ai" required />
-          <label>Receiving addresses</label>
-          <textarea name="addresses" placeholder="calendar@test.visibl.ai" />
           <p class="field-help">
-            Enter one address per line. Subdomains require explicit addresses.
-            Leave empty for a catch-all on an apex domain.
+            Apex domains receive mail at every address through a catch-all.
+            For a subdomain, we’ll ask for the receiving address next.
           </p>
-          <ModalActions submitLabel="Enable receiving" />
+          <ModalActions submitLabel="Continue" />
         </form>
       </Modal>
       <div class="table-shell">
@@ -372,7 +370,26 @@ receivingAdmin.post("/", async (c) => {
   if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(name))
     throw new AppError(422, "validation_error", "Invalid domain name.");
   const zone = await findZone(c.env, name);
-  const addresses = [
+  const isApex = name === zone.name;
+  if (!isApex && form.addresses === undefined) {
+    return c.html(
+      <Layout title="Set receiving addresses">
+        <PageHead title={`Receive email at ${name}`} />
+        <section class="panel">
+          <p>Cloudflare requires explicit receiving addresses for subdomains. Enter the address your application will use.</p>
+          <form method="post" action="/receiving-domains">
+            <label>Domain name</label>
+            <input name="name" value={name} readonly />
+            <label>Receiving address</label>
+            <textarea name="addresses" placeholder={`calendar@${name}`} required />
+            <p class="field-help">For multiple addresses, enter one per line. Every address must belong to {name}.</p>
+            <div class="actions"><a class="button" href="/receiving-domains">Back</a><button class="primary">Enable receiving</button></div>
+          </form>
+        </section>
+      </Layout>,
+    );
+  }
+  const addresses = isApex ? [] : [
     ...new Set(
       String(form.addresses ?? "")
         .split(/[\s,]+/)
@@ -389,7 +406,7 @@ receivingAdmin.post("/", async (c) => {
       "validation_error",
       "Provide at most 50 addresses belonging to this domain.",
     );
-  if (name !== zone.name && !addresses.length)
+  if (!isApex && !addresses.length)
     throw new AppError(
       422,
       "validation_error",

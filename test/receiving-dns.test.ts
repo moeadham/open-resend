@@ -10,6 +10,7 @@ let existing: Record[];
 let required: Record[];
 let routingEnabled: boolean;
 let failBatch: boolean;
+let catchAllWrites: unknown[];
 let writes: {url: string;body: {deletes: {id: string}[];patches: Record[];posts: Record[]}}[];
 const bindings = new Proxy(env, {get(target, property, receiver) {
   return property === "CLOUDFLARE_EMAIL_ROUTING_TOKEN" ? "test-routing-token" : Reflect.get(target, property, receiver);
@@ -34,11 +35,16 @@ beforeEach(async () => {
   routingEnabled = true;
   failBatch = false;
   writes = [];
+  catchAllWrites = [];
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init);
     const url = new URL(request.url);
     if(url.hostname !== "api.cloudflare.com") throw Error("Unexpected network destination");
     if(request.method !== "GET") {
+      if (url.pathname.endsWith("/email/routing/rules/catch_all")) {
+        catchAllWrites.push(await request.json());
+        return Response.json({success:true,result:{}});
+      }
       expect(url.pathname).toBe(`/client/v4/zones/${zone}/dns_records/batch`);
       writes.push({url:request.url,body:await request.json() as any});
       if (!failBatch) {
@@ -50,7 +56,9 @@ beforeEach(async () => {
       return Response.json(failBatch ? {success:false,errors:[{message:"DNS Edit permission required"}]} : {success:true,result:{}}, {status:failBatch?403:200});
     }
     let result: unknown;
-    if(url.pathname.endsWith("/email/routing/dns")) result=required;
+    if(url.pathname === "/client/v4/zones") result=url.searchParams.get("name")==="example.com" ? [{id:zone,name:"example.com"}] : [];
+    else if(url.pathname.endsWith("/email/routing/rules/catch_all")) result={id:"catch_all",enabled:false,name:"",matchers:[{type:"all"}],actions:[{type:"drop"}]};
+    else if(url.pathname.endsWith("/email/routing/dns")) result=required;
     else if(url.pathname===`/client/v4/zones/${zone}`) result={name:"example.com"};
     else if(url.pathname.endsWith("/email/routing/rules")) result=[{id:"existing-rule",enabled:true,matchers:[{type:"literal",field:"to",value:"calendar@r.example.com"}],actions:[{type:"worker",value:[env.WORKER_NAME]}]}];
     else if(url.pathname.endsWith("/email/routing")) result={enabled:routingEnabled};
@@ -137,4 +145,47 @@ it("does not duplicate DNS records when the target configuration is already pres
   const {snapshot}=await preview();
   expect((await migrate(snapshot,"overlap")).status).toBe(303);
   expect(writes).toEqual([]);
+});
+
+async function addDomain(fields: {[key:string]:string}) {
+  return adminApp.fetch(new Request("http://localhost/receiving-domains", {
+    method:"POST",headers:{Origin:"http://localhost","Content-Type":"application/x-www-form-urlencoded"},
+    body:new URLSearchParams(fields),
+  }),bindings);
+}
+it("automatically uses catch-all for apex domains and installs it when migration completes",async()=>{
+  const response=await addDomain({name:"example.com",addresses:"stale@example.com"});
+  expect(response.status).toBe(303);
+  expect(await env.DB.prepare("SELECT addresses_json FROM receiving_domains WHERE name='example.com'").first("addresses_json")).toBe("[]");
+  const previewResponse=await adminApp.fetch(new Request("http://localhost/receiving-domains/example.com"),bindings);
+  const html=await previewResponse.text();
+  expect(html).toContain("All addresses on this domain");
+  const snapshot=html.match(/name="snapshot" value="([a-f0-9]+)"/)![1]!;
+  const migrated=await adminApp.fetch(new Request("http://localhost/receiving-domains/example.com/migrate-dns",{
+    method:"POST",headers:{Origin:"http://localhost","Content-Type":"application/x-www-form-urlencoded"},
+    body:new URLSearchParams({snapshot,mx_mode:"replace",confirm_dns:"example.com"}),
+  }),bindings);
+  expect(migrated.status).toBe(303);
+  expect(catchAllWrites).toEqual([{name:"open-resend example.com",enabled:true,matchers:[{type:"all"}],actions:[{type:"worker",value:[env.WORKER_NAME]}]}]);
+  expect(await env.DB.prepare("SELECT status FROM receiving_domains WHERE name='example.com'").first("status")).toBe("verified");
+});
+it("asks for an explicit address only after detecting a subdomain",async()=>{
+  const first=await addDomain({name:"new.example.com"});
+  expect(first.status).toBe(200);
+  const html=await first.text();
+  expect(html).toContain("Cloudflare requires explicit receiving addresses for subdomains");
+  expect(html).toContain('name="addresses"');
+  expect(html).toContain("calendar@new.example.com");
+  expect(await env.DB.prepare("SELECT name FROM receiving_domains WHERE name='new.example.com'").first()).toBeNull();
+  expect((await addDomain({name:"new.example.com",addresses:"calendar@elsewhere.example"})).status).toBe(422);
+  expect((await addDomain({name:"new.example.com",addresses:""})).status).toBe(422);
+  expect((await addDomain({name:"new.example.com",addresses:"calendar@new.example.com"})).status).toBe(303);
+  expect(await env.DB.prepare("SELECT addresses_json FROM receiving_domains WHERE name='new.example.com'").first("addresses_json")).toBe('["calendar@new.example.com"]');
+  expect(catchAllWrites).toEqual([]);
+});
+it("starts domain setup with only a domain-name field",async()=>{
+  const response=await adminApp.fetch(new Request("http://localhost/receiving-domains"),bindings);
+  const html=await response.text();
+  expect(html).toContain('name="name"');
+  expect(html).not.toContain('name="addresses"');
 });

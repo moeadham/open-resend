@@ -438,10 +438,12 @@ message limit**. Open Resend does not promise Resend's larger attachment limits.
    will use. Exporting this environment variable for `npm run deploy` installs it
    as an encrypted Worker secret. Existing runtime tokens are preserved when it
    is omitted. It is separate from the sending-domain discovery token.
-2. In **Domains → Receiving domains → Add domain**, enter a domain and receiving
-   addresses. Use a subdomain such as `test.visibl.ai` to avoid disturbing your
-   existing inbox. Cloudflare supports apex catch-all routing; subdomains need
-   explicit addresses, such as `calendar@test.visibl.ai`.
+2. In **Domains → Receiving domains → Add domain**, enter the domain and select
+   **Continue**. The application detects its Cloudflare zone: an apex domain
+   automatically uses a catch-all, while a subdomain prompts for explicit
+   receiving addresses on the next step, such as `calendar@test.visibl.ai`.
+   **Migrate now** completes DNS verification and installs the catch-all or
+   address-specific routing once Cloudflare Email Routing is enabled.
 3. Enable/onboard Email Routing for that domain in Cloudflare. Open Resend shows
    Cloudflare's MX/SPF record requirements with copy controls. Add the records at
    your DNS provider, then click **I've added the record**. Open Resend checks for
