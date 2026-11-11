@@ -9,7 +9,7 @@
     "check": "npm run build:assets && npm run types && tsc --noEmit && npm run check:deployment",
     "types": "wrangler types --strict-vars=false",
     "config:deploy": "node scripts/render-wrangler.mjs",
-    "check:deployment": "node scripts/verify-deployment-config.mjs",
+    "check:deployment": "node scripts/verify-deployment-config.mjs && node scripts/verify-deploy-token-config.mjs",
     "test": "vitest run",
     "test:stress": "vitest run --config vitest.stress.config.ts",
     "emulator:seed:stress": "node scripts/seed-stress-emulator.mjs",

@@ -2,22 +2,33 @@
 
 > **Beta:** This project is under active development. We are looking for contributors to help make it feature-compatible with the official Resend client.
 
-A lightweight, self-hosted mailing-list and campaign service built entirely on Cloudflare. Open Re-send provides a familiar browser interface for managing audiences and broadcasts, plus a focused Resend-compatible API for applications that already use the official Resend SDK.
+A self-hosted Resend-compatible email service built entirely on Cloudflare. Open Resend supports transactional sending, incoming email, signed `email.received` webhooks, attachments, audiences, and broadcasts through the official Resend SDK and a protected browser admin.
 
 ## What it includes
 
-- Contacts, named segments, and optional recipient-facing Topics
-- Multiple sending domains and sender identities
+- Resend-compatible transactional `resend.emails.send`, message retrieval, idempotency, tags, custom headers, and attachments
+- Incoming email through Cloudflare Email Routing with SPF/DKIM/DMARC results, raw MIME, HTML/text, and private R2 attachments
+- Resend-compatible `email.received` webhooks with `whsec_` secrets, Svix headers, retries, logs, and replay
+- Contacts, named segments, optional recipient-facing Topics, and bulk audience administration
+- Multiple sending and receiving domains plus campaign sender identities
 - Rich-text campaign editing with preview text and test sends
 - Draft, immediate, and scheduled broadcasts
 - Searchable audience management and responsive desktop/mobile administration
 - Global and Topic-specific unsubscribe preferences
 - Branded unsubscribe pages, RFC 8058 headers, and physical-address footers
 - Delivery status, retry controls, suppressions, and dead-letter handling
-- Resend-style `re_` API keys and a compatible subset of the official SDK
+- Resend-style `re_` API keys and API/error formats compatible with the supported official SDK surface
 - Cloudflare Access protection for the complete admin hostname
 
-## Typical workflow
+## Transactional workflow
+
+1. Run the guided deployment, sign in to the protected admin, and select **Sync sending domains**.
+2. Create an `re_` API key. Configure the official SDK with the Open Resend API hostname as its `baseUrl` (or set `RESEND_BASE_URL` before importing clients that read it from the environment).
+3. Send with `resend.emails.send(...)`. Transactional sends require an enabled Cloudflare Email Sending domain but do not require a contact, segment, or campaign sender record.
+4. To receive mail, add a receiving domain. An apex domain uses a catch-all; a subdomain requires one or more explicit recipient addresses. Review and confirm **Migrate now** before Open Resend changes MX records.
+5. Create an `email.received` webhook and store its displayed `whsec_` signing secret in the receiving application. Verify callbacks with `resend.webhooks.verify(...)` and deduplicate by `svix-id`.
+
+## Broadcast workflow
 
 1. Enable a domain in Cloudflare Email Sending, then select **Sync sending domains** in **Domains**.
 2. Add one or more sender identities. Every sender requires a physical postal address and can include a company name for the compliance footer; when omitted, the sender name is used.
@@ -30,21 +41,23 @@ Topics are optional. A broadcast with a Topic unsubscribes recipients from that 
 
 ## Architecture
 
-- One Worker dispatches by hostname: `ADMIN_HOSTNAME` serves the browser UI, `API_HOSTNAME` serves the Resend-compatible API, and deployment-configured unsubscribe hostnames serve public unsubscribe pages.
+- One Worker dispatches by hostname: `ADMIN_HOSTNAME` serves the browser UI, `API_HOSTNAME` and optional aliases serve the Resend-compatible API, and deployment-configured unsubscribe hostnames serve public unsubscribe pages. The same Worker has an Email Worker handler for incoming mail.
 - The complete admin hostname is protected by a Cloudflare Zero Trust Access self-hosted application. The Worker also verifies the Access JWT.
-- D1 stores application data, Queues fan out one message per recipient, and one Durable Object alarm is used per scheduled broadcast.
-- Cloudflare Email Service is the only outbound transport.
+- D1 stores application data and delivery/webhook state. R2 privately stores incoming MIME and attachment bytes.
+- Separate Queues handle transactional/campaign delivery, Email Sending events, dead letters, and webhook attempts. One Durable Object alarm is used per scheduled broadcast, and a minute cron recovers pending work and cleans expired data.
+- Cloudflare Email Service is the only outbound transport; Cloudflare Email Routing delivers inbound mail to the Worker.
 - The admin interface is server-rendered Hono JSX with locally bundled Kiwa enhancements and Quill. No client-side SPA, CDN scripts, application passwords, or fallback login screen are used.
 
 | Hostname | Purpose | Authentication |
 | --- | --- | --- |
 | `ADMIN_HOSTNAME` | Complete browser admin | Cloudflare Access plus Worker-side JWT validation |
 | `API_HOSTNAME` | Resend-compatible API | `Authorization: Bearer re_...` |
+| API hostname aliases | Optional additional Resend-compatible API hostnames | `Authorization: Bearer re_...` |
 | Per-domain unsubscribe hostname | Public preference and unsubscribe pages | Opaque membership or contact token |
 
 ## Local development
 
-Requirements: Node.js 22+, a Cloudflare account, and Wrangler authentication. Terraform 1.10+ is additionally required for provisioning and production deploys.
+Requirements: Node.js 22+, a Cloudflare account, and Wrangler authentication. OpenTofu or Terraform 1.10+ is additionally required for provisioning and production deploys. Sending to arbitrary recipients requires Cloudflare's Workers Paid plan; Workers Free can send only to verified destination addresses.
 
 ```bash
 npm install
@@ -64,7 +77,7 @@ The local admin bypass works only when all three conditions hold:
 
 The bypass cannot authenticate a non-local hostname or a production environment.
 
-The rest of the admin works without Cloudflare credentials in local development. To exercise **Sync sending domains** locally, set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_EMAIL_DISCOVERY_TOKEN` in `.dev.vars`; use the same Email Sending Read scope described by the guided deployment.
+The rest of the admin works without Cloudflare credentials in local development. To exercise **Sync sending domains** locally, set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_EMAIL_DISCOVERY_TOKEN` in `.dev.vars`; use the Email Sending Edit plus Zone Read scope described below. To exercise receiving-domain setup, also set `CLOUDFLARE_EMAIL_ROUTING_TOKEN`. Local development still uses local D1/R2/Queues unless a binding is explicitly configured otherwise.
 
 ## Cloudflare provisioning
 
@@ -94,12 +107,29 @@ The deploy performs a complete preflight before it changes Cloudflare resources.
 - discovers the account's enabled Email Sending domains without modifying domain onboarding;
 - loads the Terraform API token from `CLOUDFLARE_API_TOKEN` or the local `.open-resend.secrets.json`, opening Cloudflare's official prefilled token template only when neither contains a token for the selected account;
 - loads a separate, account-restricted Email Sending token from `CLOUDFLARE_EMAIL_DISCOVERY_TOKEN` or the same local secrets file, then installs it as an encrypted Worker secret;
-- validates the token, Zero Trust organization, identity provider, application tests, and Terraform plan;
-- inventories D1 and Queues and displays the exact create/reuse plan;
+- loads and validates the receiving setup token from `CLOUDFLARE_EMAIL_ROUTING_TOKEN` or `emailRoutingTokens[accountId]`, prompting with a prefilled least-privilege template when it is missing, then installs it as an encrypted Worker secret;
+- validates the tokens with read-only API requests, the Zero Trust organization, identity provider, application tests, and Terraform plan;
+- inventories D1, Queues, and the private R2 bucket and displays the exact create/reuse plan;
 - requires one final confirmation before making Cloudflare changes (`DEPLOY` during setup, `y/N` for updates), unless `--yes` is supplied;
-- creates missing D1 and Queue resources, applies Access, migrates D1, deploys the Worker and custom domains, creates missing Email Sending event subscriptions, and verifies the public endpoints with retries for DNS and TLS propagation. If verification is still pending, the script reports a non-fatal warning because the Cloudflare deployment itself is already complete.
+- creates missing D1, Queue, and R2 resources, applies Access, migrates D1, deploys the Worker and custom domains, installs runtime secrets, creates missing Email Sending event subscriptions, and verifies the public endpoints with retries for DNS and TLS propagation. If verification is still pending, the script reports a non-fatal warning because the Cloudflare deployment itself is already complete.
 
-The script opens two prefilled token templates: a deployment token for Access and a separate, account-restricted token with Email Sending Edit and Zone Read for runtime domain sync. Cloudflare currently registers but does not grant the Email Sending Read scope, so the second token must use Email Sending Edit even though Open Re-send only performs read requests with it. Zone Read is required to discover the account's sending zones and query their enabled sending domains. After validation, the script stores prompted tokens by account ID in the git-ignored `.open-resend.secrets.json` with owner-only permissions (`0600`) and reuses them for later deploys. `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_EMAIL_DISCOVERY_TOKEN` take precedence and are not persisted. Tokens are never printed. Delete `.open-resend.secrets.json` to forget all saved tokens, or revoke either token in Cloudflare. On macOS, install the supported Terraform-compatible runner once with `brew install opentofu`. On other platforms, install OpenTofu or Terraform and ensure `tofu` or `terraform` is on `PATH`.
+The guided deployment uses these credentials:
+
+| Credential | Exact permissions | Purpose | Local saved key |
+| --- | --- | --- | --- |
+| Wrangler OAuth login | Granted by `wrangler login` | Worker, custom domains, D1, Queues, R2, migrations, secrets, and Email Sending event subscriptions | Wrangler profile, not this repository |
+| `CLOUDFLARE_API_TOKEN` | Account: Access: Apps and Policies Edit; Access: Organizations, Identity Providers, and Groups Read | Terraform-managed admin Access application and policy | `cloudflareApiTokens[accountId]` |
+| `CLOUDFLARE_EMAIL_DISCOVERY_TOKEN` | Account: Email Sending Edit; Zone: Zone Read | Read enabled Email Sending zones/domains at runtime | `emailDiscoveryTokens[accountId]` |
+| `CLOUDFLARE_EMAIL_ROUTING_TOKEN` | Zone: Zone Read; DNS Edit; Zone Settings Edit; Email Routing Rules Edit | Preview and explicitly execute receiving-domain setup and MX migration | `emailRoutingTokens[accountId]` |
+| `CLOUDFLARE_IMAGES_TOKEN` (optional) | Account: Cloudflare Images Edit | Broadcast-editor uploads | `imagesTokens[accountId]` |
+
+Cloudflare currently registers but does not grant the Email Sending Read scope, so the discovery token uses Email Sending Edit even though Open Resend only performs read requests with it. For the routing token, Edit includes the corresponding reads; Zone Settings Edit is required by Cloudflare's Email Routing activation endpoint. The template is restricted to the selected account and its zones. The preflight verifies that the token is active and can read zones, DNS, Email Routing settings, and rules without modifying them. Write capability is exercised only later when an administrator reviews and confirms **Migrate now**.
+
+Prompted tokens are stored by account ID in the git-ignored `.open-resend.secrets.json` with owner-only permissions (`0600`) and reused later. Environment variables take precedence and are never persisted. Tokens are never printed. Delete the relevant saved entry to forget one token, delete the file to forget all of them, or revoke a token in Cloudflare. Non-interactive first-time deploys must provide the three required token environment variables; Images remains optional.
+
+Open Resend's own `re_` API keys and `whsec_` webhook signing secrets are application credentials, not Cloudflare deployment credentials. Create them after deployment in **API keys** and **Webhooks**; the deploy script neither asks for nor generates them.
+
+On macOS, install the supported Terraform-compatible runner once with `brew install opentofu`. On other platforms, install OpenTofu or Terraform and ensure `tofu` or `terraform` is on `PATH`.
 
 ### Optional email images
 
@@ -117,7 +147,7 @@ npm run deploy -- --configure-images
 
 This opens an account-restricted **Cloudflare Images Edit** token template, checks access to Images, saves the token under `imagesTokens[accountId]` in the git-ignored `.open-resend.secrets.json` (`0600`), and installs the encrypted Worker secret `CLOUDFLARE_IMAGES_TOKEN`. Alternatively, provide `CLOUDFLARE_IMAGES_TOKEN` in your environment; environment tokens are not saved locally. Subsequent deploys reuse the saved token without another interview. The deploy script never enables an Images subscription or billing. Without a token, the editor explains that uploads need setup; the rest of the application works normally.
 
-Uploaded images are public and use non-expiring URLs. Removing an image from a draft, deleting a broadcast, or tearing down Open Re-send does **not** delete it from Cloudflare Images, because delivered emails may still reference it. Manage these images in Cloudflare Images; deleting them there breaks those references. Normal redeploys preserve existing Worker secrets; to disable uploads, remove `CLOUDFLARE_IMAGES_TOKEN` from the Worker and remove the corresponding saved/environment token.
+Uploaded images are public and use non-expiring URLs. Removing an image from a draft, deleting a broadcast, or tearing down Open Resend does **not** delete it from Cloudflare Images, because delivered emails may still reference it. Manage these images in Cloudflare Images; deleting them there breaks those references. Normal redeploys preserve existing Worker secrets; to disable uploads, remove `CLOUDFLARE_IMAGES_TOKEN` from the Worker and remove the corresponding saved/environment token.
 
 The manual procedure below remains available for debugging and infrastructure review.
 
@@ -186,12 +216,14 @@ export CLOUDFLARE_API_TOKEN="paste-token-here"
    npx wrangler d1 create cloudflare-resend
    ```
 
-4. Create the delivery, dead-letter, and Email Service event queues:
+4. Create the delivery, dead-letter, Email Service event, and webhook queues, plus the private R2 bucket used for incoming MIME and attachments:
 
    ```bash
    npx wrangler queues create cloudflare-resend-deliveries
    npx wrangler queues create cloudflare-resend-deliveries-dlq
    npx wrangler queues create cloudflare-resend-email-events
+   npx wrangler queues create cloudflare-resend-webhooks
+   npx wrangler r2 bucket create cloudflare-resend-email
    ```
 
 5. Copy `.deployment.example.json` to `.deployment.json`, enter the admin hostname, API hostname, and D1 database ID, and map each sending domain to its unsubscribe hostname:
@@ -232,15 +264,18 @@ export CLOUDFLARE_API_TOKEN="paste-token-here"
    npm run deploy:dry
    npm run deploy:worker
    npx wrangler secret put CLOUDFLARE_EMAIL_DISCOVERY_TOKEN --config wrangler.deploy.jsonc
+   npx wrangler secret put CLOUDFLARE_EMAIL_ROUTING_TOKEN --config wrangler.deploy.jsonc
    ```
 
-After signing into the admin hostname through Access, select **Sync sending domains**, add sender identities, then create the first API key from the **API keys** page. Sync reads Cloudflare's current Email Sending configuration; it never enables or disables domains. A domain also needs an unsubscribe hostname in `.deployment.json` before it can be selected for a sender.
+   Add `CLOUDFLARE_IMAGES_TOKEN` the same way only when Cloudflare Images uploads are enabled. The manual route does not validate or save these tokens for you; use the exact permission table above.
+
+After signing into the admin hostname through Access, select **Sync sending domains**, add campaign sender identities, then create the first API key from the **API keys** page. Sync reads Cloudflare's current Email Sending configuration; it never enables or disables domains. A domain also needs an unsubscribe hostname in `.deployment.json` before it can be selected for a campaign sender. Transactional sends use any enabled, synced sending domain and do not require a campaign sender record.
 
 For shared or automated deployments, store Terraform state in a remote backend with locking rather than committing local state. A manually created Access application for the same hostname must be removed before applying this configuration; the project intentionally supports one Terraform-owned installation path rather than migration of dashboard-managed resources.
 
 ## Resend SDK compatibility
 
-Compatibility is tested against the pinned official client, `resend@6.32.0`. Open Re-send is compatible with a focused campaign-management subset; it is not yet a drop-in replacement for every namespace exposed by the Resend client.
+Compatibility is tested against the pinned official client, `resend@6.32.0`, with additional legacy contract coverage for `resend@6.4.2`. Open Resend is a drop-in backend replacement for the supported transactional, receiving, webhook, audience, and broadcast operations; it is not yet a replacement for every namespace exposed by Resend.
 
 Configure the SDK with this service's base URL:
 
@@ -249,6 +284,14 @@ import { Resend } from "resend";
 
 const resend = new Resend(process.env.MAIL_API_KEY, {
   baseUrl: "https://mail-api.example.com",
+});
+
+await resend.emails.send({
+  from: "Calendar <calendar@example.com>",
+  to: "reader@example.net",
+  subject: "Meeting confirmed",
+  html: "<p>See you then.</p>",
+  attachments: [{ filename: "invite.ics", content: base64Ics }],
 });
 
 const segment = await resend.segments.create({ name: "Product updates" });
@@ -274,12 +317,16 @@ await resend.broadcasts.create({
 });
 ```
 
-API keys use a `re_` prefix, are displayed once, and are stored only as SHA-256 hashes. `Idempotency-Key` is supported on broadcast mutations for 24 hours. Scheduling accepts ISO 8601 timestamps only.
+API keys use a `re_` prefix, are displayed once, and are stored only as SHA-256 hashes. `Idempotency-Key` is supported on transactional sends and broadcast mutations for 24 hours. Broadcast scheduling accepts ISO 8601 timestamps only.
 
 ### Implemented client surface
 
 | Client namespace | Implemented methods |
 | --- | --- |
+| `resend.emails` | `send`, `list`, `get` for transactional messages |
+| `resend.emails.receiving` | `list`, `get` |
+| `resend.emails.receiving.attachments` | `list`, `get` with expiring `download_url` |
+| `resend.webhooks` | `create`, `list`, `get`, `update`, `remove`, `verify` for `email.received` |
 | `resend.segments` | `create`, `list`, `get`, `update`, `remove` |
 | `resend.topics` | `create`, `list`, `get`, `update`, `remove` |
 | `resend.contacts` | `create`, `list`, `get`, `update`, `remove` by contact ID or email |
@@ -287,32 +334,33 @@ API keys use a `re_` prefix, are displayed once, and are stored only as SHA-256 
 | `resend.contacts.topics` | `list`, `update` |
 | `resend.broadcasts` | `create`, `list`, `get`, `update`, `remove`, `send`, `cancel` |
 
-The official client converts its camel-case options to the snake-case API fields used by the Worker. React broadcast content also works when the SDK can render it to HTML before making the request.
+The official client converts its camel-case options to the snake-case API fields used by the Worker. React content also works when the SDK renders it to HTML before making the request. Admin-only webhook event logs and replay are available in the browser even though the Resend SDK has no equivalent replay method.
 
 ### Remaining compatibility work
 
 The following gaps remain within the campaign and audience surface already implemented:
 
 - Add `resend.broadcasts.recipients`, `resend.broadcasts.clickedLinks`, and `resend.broadcasts.duplicate`.
-- Accept multiple `replyTo` addresses. Open Re-send currently accepts exactly one.
-- Accept Resend's relative scheduling expressions such as `in 2 days`. Open Re-send currently requires an ISO 8601 timestamp.
+- Accept multiple `replyTo` addresses. Open Resend currently accepts exactly one.
+- Accept Resend's relative scheduling expressions such as `in 2 days`. Open Resend currently requires an ISO 8601 timestamp.
 - Implement cursor pagination for `contacts.segments.list` and `contacts.topics.list`; both currently return the complete result with `has_more: false`.
 - Support deprecated `audienceId` request fields and legacy `/audiences/.../contacts` routes if legacy application compatibility is required. The client's `resend.audiences` alias itself points to the modern Segments client.
-- Remove the Open Re-send-specific requirement that a broadcast's `from` address exactly match an active sender registered in the admin, or document an adapter strategy for applications that construct sender addresses dynamically.
+- Remove the Open Resend-specific requirement that a broadcast's `from` address exactly match an active sender registered in the admin, or document an adapter strategy for applications that construct sender addresses dynamically.
 - Expand official-client contract tests to cover every implemented get, update, remove, pagination, cancellation, scheduling, validation, and error path. The current suite proves the main end-to-end paths but is not yet an exhaustive SDK conformance suite.
 
-The following Resend client namespaces are not implemented and remain outside the v1 scope:
+The following Resend client namespaces or operations are not implemented and remain outside the current scope:
 
 - `resend.apiKeys` — keys are managed only through the protected admin site and are currently full-access.
 - `resend.automations` and automation runs.
-- `resend.batch` and transactional `resend.emails`, including attachments and inbound/receiving email operations.
+- `resend.batch`; transactional batch send is not implemented.
+- Transactional scheduling/cancellation, templates, topic-based sends, sent-attachment APIs, and webhook events other than `email.received`.
 - `resend.contactProperties` schema management and `resend.contacts.imports`. Arbitrary contact property values are stored, but property definitions and bulk CSV imports are absent.
 - `resend.domains` and domain claims. Domains are onboarded in Cloudflare Email Sending and synchronized into the admin.
 - `resend.events`, `resend.logs`, and `resend.usage`.
 - `resend.oauthGrants`.
-- `resend.suppressions`, including batch suppression management. Open Re-send creates suppressions from hard bounces and complaints but does not expose the matching SDK routes.
+- `resend.suppressions`, including batch suppression management. Open Resend creates suppressions from hard bounces and complaints but does not expose the matching SDK routes.
 - `resend.templates`.
-- `resend.webhooks`, webhook events, replay, and delivery attempts. Cloudflare Email Service event subscriptions are configured outside the Resend-compatible API.
+- Resend's standalone events/logs API for webhook attempts. Open Resend exposes delivery attempts and Replay through the protected admin instead.
 
 Also outside v1: public signup forms, broadcast recipient export, and open/click tracking.
 
@@ -374,11 +422,11 @@ There is no application-level hard limit at 50,000 contacts. The fan-out work is
 | Queue delay/backlog | A queue supports 5,000 messages per second, a 25 GB backlog, up to 250 concurrent push consumers, and a 15-minute consumer invocation. Retention is 24 hours on Workers Free and configurable up to 14 days on other plans. A slow or quota-limited email transport can let a large campaign approach retention or backlog limits. |
 | Worker resources | Workers have 128 MB of memory per isolate. The bounded fan-out avoids the previous recipient-proportional in-memory ID array, but MIME generation, logging, and concurrent delivery still consume CPU and memory per invocation. |
 | Email Service | Daily sending limits are account-specific and increase according to sending behavior, deliverability, and account standing; Cloudflare does not publish one universal number. A campaign larger than the available daily quota can receive `E_RATE_LIMIT_EXCEEDED` or `E_DAILY_LIMIT_EXCEEDED`. This Worker retries transient failures, but its configured retry count is not a substitute for confirming quota before a large send. |
-| Message content | Email Service limits normal outbound messages to 5 MiB and subjects to 998 characters. Open Re-send sends one recipient per message, so the platform's 50-recipient-per-message limit does not increase campaign throughput. |
+| Message content | Email Service limits total outbound messages to 25 MiB, custom headers to 16 KB, subjects to 998 characters, and combined To/CC/BCC recipients to 50. Open Resend sends campaign mail one recipient per message, so the recipient ceiling does not increase campaign throughput. |
 
-Cloudflare currently describes Email Service as intended for transactional email rather than marketing or bulk-sender workloads. Confirm that the intended campaign use is supported, request sufficient sending quota, and warm up domains responsibly before attempting a real 50,000-recipient send.
+Cloudflare's current FAQ says Email Service supports transactional email and not marketing email. Use broadcasts only for mail Cloudflare permits, obtain explicit approval for any broader campaign use, request sufficient sending quota, and warm up domains responsibly before attempting a large send.
 
-Limits change. The values above were reviewed on 2026-10-07 against the official [D1 limits](https://developers.cloudflare.com/d1/platform/limits/), [D1 pricing and row quotas](https://developers.cloudflare.com/d1/platform/pricing/), [Queues limits](https://developers.cloudflare.com/queues/platform/limits/), [Workers limits](https://developers.cloudflare.com/workers/platform/limits/), and [Email Service limits](https://developers.cloudflare.com/email-service/platform/limits/).
+Limits change. The values above were reviewed on 2026-11-11 against the official [D1 limits](https://developers.cloudflare.com/d1/platform/limits/), [D1 pricing and row quotas](https://developers.cloudflare.com/d1/platform/pricing/), [Queues limits](https://developers.cloudflare.com/queues/platform/limits/), [Workers limits](https://developers.cloudflare.com/workers/platform/limits/), and [Email Service limits](https://developers.cloudflare.com/email-service/platform/limits/).
 
 ## Verification
 
@@ -390,19 +438,15 @@ npm run deploy:dry  # Wrangler bundle and binding validation
 npm audit --omit=dev
 ```
 
-The Worker-runtime suite applies the real D1 migration and exercises API authentication, the pinned official Resend SDK, idempotent Broadcast creation, Access JWT validation, scanner-safe unsubscribe behavior, and generated MIME headers/body ordering. Staging delivery and event-subscription checks still require provisioned Cloudflare domains and queues.
-
-## License
-
-Open Re-send is available under the [MIT License](LICENSE).
+The Worker-runtime suite applies the real D1 migrations and exercises API authentication, both pinned Resend SDK versions, transactional and broadcast idempotency, incoming MIME and attachment handling, webhook signing/retry/replay, Access JWT validation, scanner-safe unsubscribe behavior, receiving DNS planning, and generated MIME headers/body ordering. Live SMTP delivery, Email Routing, DNS migration, and Email Sending event subscriptions still require a provisioned Cloudflare account and controlled test domains.
 
 ## Transactional and incoming email
 
-The official Resend Node SDK can use this installation without an adapter. Set
-`RESEND_BASE_URL=https://YOUR_API_HOSTNAME` **before importing `resend`**, replace
-`RESEND_API_KEY` with an Open Resend key, and configure your callback with the
-signing secret generated by Open Resend. The contract suite exercises Resend
-6.32.0 and fwd2cal's declared 6.4.2 client.
+The official Resend Node SDK can use this installation without an adapter. Pass
+`{ baseUrl: "https://YOUR_API_HOSTNAME" }` to the `Resend` constructor, or set
+`RESEND_BASE_URL` before constructing a client. Replace `RESEND_API_KEY` with an
+Open Resend key and use the webhook signing secret generated by Open Resend. The
+contract suite exercises Resend 6.32.0 and the legacy 6.4.2 client.
 
 Supported transactional endpoints:
 
@@ -428,18 +472,19 @@ Batch sends, scheduling/cancellation, templates, topic-based transactional
 sending, sent attachment APIs, and webhook events other than `email.received`
 are not implemented in this release. Unsupported send options are rejected.
 The wire format is Resend-compatible within this supported surface; Cloudflare
-imposes its own sending quotas, header restrictions, and **25 MiB encoded
-message limit**. Open Resend does not promise Resend's larger attachment limits.
+imposes its own sending quotas, header restrictions, and **25 MiB total message
+limit**, including attachments. Open Resend does not promise Resend's larger
+attachment limits.
 
 ### Receiving domains and DNS
 
-1. Provide `CLOUDFLARE_EMAIL_ROUTING_TOKEN` with **Zone Read**, **Zone Settings
-   Read and Edit**, **DNS Read and Edit**, and **Email Routing Rules Edit** access
-   to the zones you will use. Exporting this environment variable for
-   `npm run deploy` installs it as an encrypted Worker secret. Existing runtime
-   tokens are preserved when it is omitted. It is separate from the sending-domain
-   discovery token. Cloudflare calls the Zone Settings Edit permission
-   “Zone Settings Write” in its API documentation.
+1. The guided deploy prompts for a separate `CLOUDFLARE_EMAIL_ROUTING_TOKEN`,
+   opens the prefilled token form, validates read access, saves it by account ID,
+   and installs it as an encrypted Worker secret. The token uses **Zone Read**,
+   **DNS Edit**, **Zone Settings Edit**, and **Email Routing Rules Edit**. Supply
+   the environment variable instead for non-interactive deployment; environment
+   values are not persisted. Cloudflare calls Edit permissions “Write” in some
+   API documentation.
 2. In **Domains → Receiving domains → Add domain**, enter the domain and select
    **Continue**. The application detects its Cloudflare zone: an apex domain
    automatically uses a catch-all, while a subdomain prompts for explicit
@@ -469,10 +514,10 @@ record” step is required. The deprecated Cloudflare DNS `subdomain` query is n
 **Receiving authentication is fail-closed by default.** The deployment setting
 `inboundAuthResultsVerified` defaults to `false`. In that state,
 `authentication` is `null` and `headers["authentication-results"]` contains no
-passing results. fwd2cal will reject the email at its existing verification step.
+passing results, so applications that require authenticated mail reject it.
 
-Before using this installation with fwd2cal in production, perform controlled
-live SMTP tests against Cloudflare Email Routing: a valid SPF/DKIM message, a
+Before allowing an application to trust the structured results, perform
+controlled live SMTP tests against that deployment: a valid SPF/DKIM message, a
 failed-authentication message, a forwarded message, and messages containing
 forged duplicate `Authentication-Results` headers (including a forged
 `mx.cloudflare.net` authserv-id and passing claims hidden in comments). Confirm
@@ -485,11 +530,10 @@ Missing or ambiguous results never become a pass. Do not enable the setting
 merely because an incoming header says `mx.cloudflare.net`.
 
 The [2026-11-02 live validation report](docs/transactional-live-test-2026-11-02.md)
-records verified sending, receiving, attachment bytes, authentication header
-ordering, signed callbacks, retry, and replay. Failed-authentication and
-forwarded-mail cases still need live validation before the production gate is
-fully satisfied. No live SMTP provenance validation is implied by the automated
-contract tests.
+records the initial controlled sending, receiving, attachment-byte,
+authentication-ordering, callback, retry, and replay checks. It is a dated test
+record, not a substitute for validating the Cloudflare behavior of a new
+installation. Automated contract tests do not prove live SMTP provenance.
 Cloudflare can also reject mail before the Worker runs, independently of the
 application's policy.
 
@@ -530,18 +574,19 @@ export/removal. Do not remove the Worker while inbound routing still targets it.
 
 ### fwd2cal compatibility note
 
-An older fwd2cal callback used an incorrect attachment SDK path and treated
-metadata as file bytes. The checkout used for migration (`98cfc30`) already
-uses `resend.emails.receiving.attachments.list(...)` and fetches each
-`download_url`. Its real calendar attachment handler has been tested against the
-deployed Open Resend API with exact ICS bytes.
-
-The migration adds calendar-specific API URL/key/signing-secret settings and
-updates the SDK to 6.32.0 for per-client API URLs. Both webhook secrets remain
-accepted during the MX transition, and verified provider provenance selects the
-correct receiving API for each queued email. See the
-[migration status and cutover procedure](docs/fwd2cal-migration.md).
+fwd2cal uses Open Resend as a drop-in Resend backend, not through a dual-provider
+adapter. Configure its standard `RESEND_API_KEY` and `RESEND_SIGNING_SECRET` with
+Open Resend values and set the SDK base URL to the Open Resend API hostname. Its
+incoming attachment handler must call
+`resend.emails.receiving.attachments.list(...)` and then fetch each returned
+`download_url`; attachment metadata is not the file body. The real calendar
+handler has been exercised with exact ICS bytes, alongside PDF and image
+attachments.
 
 Additional API hostnames can be configured with an optional `apiHostnameAliases`
 array in `.deployment.json`. These receive custom domain routes and the same API
 key authentication as `apiHostname`; signed download URLs use the primary hostname.
+
+## License
+
+Open Resend is available under the [MIT License](LICENSE).

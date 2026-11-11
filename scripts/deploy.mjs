@@ -4,22 +4,18 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
+import {
+  apiTokenTemplateUrl,
+  deploymentTokenPermissions,
+  emailDiscoveryTokenPermissions,
+  emailRoutingTokenPermissions,
+  imagesTokenPermissions,
+} from "./cloudflare-token-config.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const deploymentPath = resolve(root, ".deployment.json");
 const secretsPath = resolve(root, ".open-resend.secrets.json");
 const terraformVarsPath = resolve(root, "infra/access/terraform.tfvars");
-const tokenPermissions = [
-  { key: "access", type: "edit" },
-  { key: "access_acct", type: "read" },
-];
-const emailDiscoveryPermissions = [
-  // Cloudflare registers email_sending:read but does not currently grant it.
-  // Wrangler uses email_sending:write for the same discovery endpoints. Zone
-  // Read is also required by the zone inventory and subdomain endpoints.
-  { key: "email_sending", type: "edit" },
-  { key: "zone", type: "read" },
-];
 const emailEvents = [
   "message.delivered",
   "message.deferred",
@@ -353,6 +349,7 @@ async function main() {
   const token = await getTerraformToken(account);
   console.log("✓ Cloudflare deployment token is active");
   const emailDiscoveryToken = await getEmailDiscoveryToken(account);
+  const emailRoutingToken = await getEmailRoutingToken(account);
   const imagesToken = await getImagesToken(account);
   const discoveredDomains = await verifyEmailDiscoveryToken(emailDiscoveryToken, account.id);
   console.log(`✓ Cloudflare Email Sending token can read ${discoveredDomains.length} enabled domain${discoveredDomains.length === 1 ? "" : "s"}`);
@@ -378,6 +375,7 @@ async function main() {
   console.log(`R2 email storage:     ${bucketExists ? "reuse" : "create"} ${emailBucket}`);
   console.log("Access:               apply the validated Terraform plan");
   console.log("Worker secret:        install scoped Email Sending token");
+  console.log("Receiving setup:      install scoped Email Routing token");
   console.log(`Image uploads:        ${imagesToken ? "install scoped Images token" : "not configured (existing Worker secrets are preserved)"}`);
   console.log("Database:             apply all pending migrations");
   console.log("Email events:         create missing per-domain subscriptions");
@@ -447,10 +445,8 @@ async function main() {
     commandWithInput("npx", ["--no-install", "wrangler", "secret", "put", "CLOUDFLARE_IMAGES_TOKEN", "--config", "wrangler.deploy.jsonc"], `${imagesToken}\n`, { env: accountEnv(account.id) });
   }
 
-  if (process.env.CLOUDFLARE_EMAIL_ROUTING_TOKEN) {
-    section("Installing receiving setup token");
-    commandWithInput("npx", ["--no-install", "wrangler", "secret", "put", "CLOUDFLARE_EMAIL_ROUTING_TOKEN", "--config", "wrangler.deploy.jsonc"], `${process.env.CLOUDFLARE_EMAIL_ROUTING_TOKEN}\n`, { env: accountEnv(account.id) });
-  }
+  section("Installing receiving setup token");
+  commandWithInput("npx", ["--no-install", "wrangler", "secret", "put", "CLOUDFLARE_EMAIL_ROUTING_TOKEN", "--config", "wrangler.deploy.jsonc"], `${emailRoutingToken}\n`, { env: accountEnv(account.id) });
 
   section("Configuring Email Sending events");
   await ensureEmailEventSubscriptions({ accountId: account.id, domains: sendingDomains, enabledDomains, queue: queueNames.emailEvents });
@@ -466,7 +462,7 @@ async function main() {
     for (const warning of verificationWarnings) console.log(`- ${warning}`);
     console.log("This is commonly caused by DNS or TLS propagation immediately after creating custom domains. The deployment does not need to be repeated; check these URLs again in a few minutes.");
   }
-  console.log("Next: sign into the admin site, sync sending domains, add sender identities, and create an API key.");
+  console.log("Next: sign into the admin site, sync sending domains, add sender identities, create an API key, and configure receiving domains and email.received webhooks as needed.");
 }
 
 function findTerraform() {
@@ -589,24 +585,36 @@ function retain(retained, label, reason) {
 }
 
 async function requestTerraformToken(account) {
-  const tokenUrl = apiTokenTemplateUrl(account.id, tokenPermissions, "Open Resend deployment");
+  const tokenUrl = apiTokenTemplateUrl(account.id, deploymentTokenPermissions, "Open Resend deployment");
   console.log("\nA scoped Cloudflare API token is required only for the Zero Trust Access application.");
   console.log(`Opening a prefilled token for ${account.name}.`);
   console.log("Review the two permissions, continue to the summary, create the token, and copy its one-time value.");
   console.log(`If the browser does not open, use:\n${tokenUrl}\n`);
   openUrl(tokenUrl);
-  return secretQuestion("Paste the token (input is hidden): ");
+  return secretQuestion("Paste the token (input is hidden): ", "CLOUDFLARE_API_TOKEN");
 }
 
 async function requestEmailDiscoveryToken(account) {
-  const tokenUrl = apiTokenTemplateUrl(account.id, emailDiscoveryPermissions, "Open Resend Email Sending discovery");
+  const tokenUrl = apiTokenTemplateUrl(account.id, emailDiscoveryTokenPermissions, "Open Resend Email Sending discovery");
   console.log("\nA second Cloudflare API token lets the deployed Worker sync enabled Email Sending domains.");
   console.log("Cloudflare does not currently grant the Email Sending Read scope, so this token uses Email Sending Edit plus Zone Read and is restricted to this account.");
   console.log(`Opening a prefilled token for ${account.name}.`);
   console.log("Review the Email Sending Edit, Zone Read, and account restriction settings, create the token, and copy its one-time value.");
   console.log(`If the browser does not open, use:\n${tokenUrl}\n`);
   openUrl(tokenUrl);
-  return secretQuestion("Paste the Email Sending token (input is hidden): ");
+  return secretQuestion("Paste the Email Sending token (input is hidden): ", "CLOUDFLARE_EMAIL_DISCOVERY_TOKEN");
+}
+
+async function requestEmailRoutingToken(account) {
+  const tokenUrl = apiTokenTemplateUrl(account.id, emailRoutingTokenPermissions, "Open Resend receiving setup");
+  console.log("\nA third scoped token lets Open Resend inspect receiving DNS, create Email Routing rules, and perform an explicitly confirmed MX migration.");
+  console.log("It uses Zone Read, DNS Edit, Zone Settings Edit, and Email Routing Rules Edit, restricted to zones in this account.");
+  console.log("Edit includes the corresponding read operations used by the receiving setup preview.");
+  console.log(`Opening a prefilled token for ${account.name}.`);
+  console.log("Review those four permissions and the account/zone restrictions, create the token, and copy its one-time value.");
+  console.log(`If the browser does not open, use:\n${tokenUrl}\n`);
+  openUrl(tokenUrl);
+  return secretQuestion("Paste the Email Routing token (input is hidden): ", "CLOUDFLARE_EMAIL_ROUTING_TOKEN");
 }
 
 async function getTerraformToken(account) {
@@ -674,6 +682,38 @@ async function getEmailDiscoveryToken(account) {
   return token;
 }
 
+async function getEmailRoutingToken(account) {
+  const environmentToken = process.env.CLOUDFLARE_EMAIL_ROUTING_TOKEN;
+  if (environmentToken) {
+    await verifyEmailRoutingToken(environmentToken, account.id);
+    console.log("✓ Using Email Routing token from CLOUDFLARE_EMAIL_ROUTING_TOKEN");
+    return environmentToken;
+  }
+
+  const secrets = readJsonIfPresent(secretsPath) ?? {};
+  const savedToken = secrets.emailRoutingTokens?.[account.id];
+  if (typeof savedToken === "string" && savedToken) {
+    try {
+      await verifyEmailRoutingToken(savedToken, account.id);
+      console.log(`✓ Using saved Email Routing token from ${secretsPath}`);
+      return savedToken;
+    } catch (error) {
+      console.log(`The saved Email Routing token for ${account.name} cannot manage receiving setup: ${error.message}`);
+    }
+  }
+
+  const token = await requestEmailRoutingToken(account);
+  await verifyEmailRoutingToken(token, account.id);
+  const emailRoutingTokens = {
+    ...(secrets.emailRoutingTokens ?? {}),
+    [account.id]: token,
+  };
+  writeFileSync(secretsPath, `${JSON.stringify({ ...secrets, emailRoutingTokens }, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(secretsPath, 0o600);
+  console.log(`✓ Saved Email Routing token to ${secretsPath} (mode 0600)`);
+  return token;
+}
+
 async function getImagesToken(account) {
   const secrets = readJsonIfPresent(secretsPath) ?? {};
   let token = process.env.CLOUDFLARE_IMAGES_TOKEN ?? secrets.imagesTokens?.[account.id];
@@ -681,10 +721,10 @@ async function getImagesToken(account) {
     if (!process.stdin.isTTY) fail("Run --configure-images interactively, or supply CLOUDFLARE_IMAGES_TOKEN without that flag.");
     console.log("\nOptional image uploads require existing Cloudflare Images storage. This does not enable a subscription or billing.");
     if ((await ask("Configure Cloudflare Images uploads?", "N")).toLowerCase().startsWith("y")) {
-      const url = apiTokenTemplateUrl(account.id, [{ key: "images", type: "edit" }], "Open Resend image uploads");
+      const url = apiTokenTemplateUrl(account.id, imagesTokenPermissions, "Open Resend image uploads");
       console.log(`Create an account-restricted token with Cloudflare Images Edit:\n${url}`);
       openUrl(url);
-      token = await secretQuestion("Paste the Images token (input is hidden): ");
+      token = await secretQuestion("Paste the Images token (input is hidden): ", "CLOUDFLARE_IMAGES_TOKEN");
       await verifyImagesToken(token, account.id);
       writeFileSync(secretsPath, `${JSON.stringify({ ...secrets, imagesTokens: { ...secrets.imagesTokens, [account.id]: token } }, null, 2)}\n`, { mode: 0o600 });
       chmodSync(secretsPath, 0o600);
@@ -708,17 +748,8 @@ async function verifyImagesToken(token, accountId) {
   if (!response.ok || !body?.success) fail("Cloudflare Images is unavailable. Enable Images storage on this account and grant the token Cloudflare Images Edit permission.");
 }
 
-function apiTokenTemplateUrl(accountId, permissions, name) {
-  const url = new URL("https://dash.cloudflare.com/profile/api-tokens");
-  url.searchParams.set("permissionGroupKeys", JSON.stringify(permissions));
-  url.searchParams.set("accountId", accountId);
-  url.searchParams.set("zoneId", "all");
-  url.searchParams.set("name", name);
-  return url.toString();
-}
-
-function secretQuestion(prompt) {
-  if (!process.stdin.isTTY || !process.stdin.setRawMode) fail("Set CLOUDFLARE_API_TOKEN in the environment when running non-interactively.");
+function secretQuestion(prompt, environmentName) {
+  if (!process.stdin.isTTY || !process.stdin.setRawMode) fail(`Set ${environmentName} in the environment when running non-interactively.`);
   process.stdout.write(prompt);
   process.stdin.setRawMode(true);
   process.stdin.resume();
@@ -765,6 +796,53 @@ async function verifyEmailDiscoveryToken(token, accountId) {
   const zones = await cloudflarePages(`/accounts/${accountId}/email/sending/zones`, token);
   const subdomains = (await Promise.all(zones.map((zone) => cloudflarePages(`/zones/${zone.id}/email/sending/subdomains`, token)))).flat();
   return [...new Set(subdomains.filter((domain) => domain.enabled && !domain.name.startsWith("*.")).map((domain) => normalizeHostname(domain.name)))].sort();
+}
+
+async function verifyEmailRoutingToken(token, accountId) {
+  await verifyToken(token);
+  const zones = await cloudflareJson(`/zones?account.id=${encodeURIComponent(accountId)}&status=active&per_page=50`, token, "list zones");
+  if (!Array.isArray(zones) || !zones.length) {
+    fail("The Email Routing token cannot see any active zones in the selected account. Grant Zone Read and include the account's zones.");
+  }
+
+  // These checks are intentionally read-only. The generated token template
+  // grants the matching Edit groups, but preflight must not mutate DNS or
+  // routing before the user approves the deployment plan.
+  const zoneId = zones[0].id;
+  await cloudflareJson(`/zones/${zoneId}/dns_records?per_page=1`, token, "read DNS records");
+  await cloudflareRoutingRead(`/zones/${zoneId}/email/routing`, token, "read Email Routing settings");
+  await cloudflareRoutingRead(`/zones/${zoneId}/email/routing/rules?per_page=1`, token, "read Email Routing rules");
+}
+
+async function cloudflareJson(path, token, action) {
+  const response = await fetch(`https://api.cloudflare.com/client/v4${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(15_000),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || !body.success) {
+    const detail = body.errors?.map((error) => error.message).filter(Boolean).join("; ");
+    fail(`The Email Routing token cannot ${action}${detail ? `: ${detail}` : "."} Use Zone Read, DNS Edit, Zone Settings Edit, and Email Routing Rules Edit, restricted to the selected account's zones.`);
+  }
+  return body.result;
+}
+
+async function cloudflareRoutingRead(path, token, action) {
+  const response = await fetch(`https://api.cloudflare.com/client/v4${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(15_000),
+  });
+  const body = await response.json().catch(() => ({}));
+  const authenticationFailure = response.status === 401
+    || response.status === 403
+    || body.errors?.some((error) => [10000, 9109].includes(error.code));
+  if (authenticationFailure) {
+    const detail = body.errors?.map((error) => error.message).filter(Boolean).join("; ");
+    fail(`The Email Routing token cannot ${action}${detail ? `: ${detail}` : "."} Use Zone Read, DNS Edit, Zone Settings Edit, and Email Routing Rules Edit, restricted to the selected account's zones.`);
+  }
+  // A zone that has never enabled Email Routing can return a non-auth setup
+  // error here. That is valid during first deployment and will be handled by
+  // the receiving-domain onboarding flow after deployment.
 }
 
 async function cloudflarePages(path, token) {
