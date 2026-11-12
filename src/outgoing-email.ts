@@ -15,8 +15,8 @@ import {
   MAX_EMAIL_BYTES,
   publicFetch,
   randomSecret,
-  RETENTION_MS,
 } from "./email-security";
+import { emailExpiry, getEmailRetentionDays } from "./settings";
 import {
   objectKey,
   mailRow,
@@ -176,7 +176,10 @@ export async function createOutgoingEmail(
     );
   const id = crypto.randomUUID(),
     now = nowIso(),
-    expiresAt = new Date(Date.now() + RETENTION_MS).toISOString();
+    expiresAt = emailExpiry(
+      Date.parse(now),
+      await getEmailRetentionDays(env.DB),
+    );
   const attachments: Attachment[] = [];
   const contents: { meta: Attachment; bytes: Uint8Array }[] = [];
   let size = Buffer.byteLength(html ?? "") + Buffer.byteLength(text ?? "");

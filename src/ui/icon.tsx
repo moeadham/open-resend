@@ -1,6 +1,6 @@
 import type { FC, JSX } from "hono/jsx";
 import type { IconNode } from "lucide";
-import { AtSign, CalendarClock, Check, ChevronLeft, ChevronRight, CircleDot, CircleX, Copy, Ellipsis, Eye, EyeOff, Globe2, Info, KeyRound, Megaphone, Pencil, Plus, Search, Send, Users, X } from "lucide";
+import { AtSign, CalendarClock, Check, ChevronLeft, ChevronRight, CircleDot, CircleX, Copy, Ellipsis, Eye, EyeOff, Globe2, Info, KeyRound, Megaphone, Pencil, Plus, Search, Send, Settings, Users, X } from "lucide";
 
 type SvgProps = {
   class?: string;
@@ -42,3 +42,4 @@ export const InfoIcon = createIcon(Info);
 export const KeyIcon = createIcon(KeyRound);
 export const SearchIcon = createIcon(Search);
 export const SendIcon = createIcon(Send);
+export const SettingsIcon = createIcon(Settings);

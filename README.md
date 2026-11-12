@@ -44,7 +44,7 @@ Topics are optional. A broadcast with a Topic unsubscribes recipients from that 
 - One Worker dispatches by hostname: `ADMIN_HOSTNAME` serves the browser UI, `API_HOSTNAME` and optional aliases serve the Resend-compatible API, and deployment-configured unsubscribe hostnames serve public unsubscribe pages. The same Worker has an Email Worker handler for incoming mail.
 - The complete admin hostname is protected by a Cloudflare Zero Trust Access self-hosted application. The Worker also verifies the Access JWT.
 - D1 stores application data and delivery/webhook state. R2 privately stores incoming MIME and attachment bytes.
-- Separate Queues handle transactional/campaign delivery, Email Sending events, dead letters, and webhook attempts. One Durable Object alarm is used per scheduled broadcast, and a minute cron recovers pending work and cleans expired data.
+- Separate Queues handle transactional/campaign delivery, Email Sending events, dead letters, and webhook attempts. One Durable Object alarm is used per scheduled broadcast, and an hourly cron recovers pending work and cleans expired data.
 - Cloudflare Email Service is the only outbound transport; Cloudflare Email Routing delivers inbound mail to the Worker.
 - The admin interface is server-rendered Hono JSX with locally bundled Kiwa enhancements and Quill. No client-side SPA, CDN scripts, application passwords, or fallback login screen are used.
 
@@ -560,8 +560,12 @@ with delays of 5 seconds, 5 minutes, 30 minutes, 2 hours, 5 hours, 10 hours, and
 shows attempts, HTTP responses, payloads, and Replay. Replay preserves the event
 ID and payload and signs with the current timestamp.
 
-Content and webhook histories expire after **30 days**, with expiry enforced on
-reads and bounded scheduled cleanup of D1/R2. A minute cron recovers pending
+Content and webhook histories expire after **30 days** by default. Change this
+under **Settings → Email retention** in the admin (1–3650 days); the new period
+applies to stored emails as well as new ones, measured from when each email was
+sent or received. Expiry is enforced on reads immediately; an hourly cron then
+deletes up to 200 expired emails' D1 rows and R2 objects per run, so a large
+backlog after shortening retention drains over several hours. The same cron recovers pending
 outbox and sending work, retries interrupted webhook deliveries, and removes
 expired/orphaned storage. Download URLs and secrets must not be logged by client
 applications. URL attachments and callbacks require public HTTPS hosts, public

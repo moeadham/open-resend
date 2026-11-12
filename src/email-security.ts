@@ -4,7 +4,6 @@ import ipaddr from "ipaddr.js";
 import { AppError } from "./lib";
 
 export const MAX_EMAIL_BYTES = 25 * 1024 * 1024;
-export const RETENTION_MS = 30 * 86400_000;
 
 export function publicUrl(value: unknown): URL {
   let url: URL;
