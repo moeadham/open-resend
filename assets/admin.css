@@ -169,6 +169,7 @@
 .row-menu-popover form { @apply m-0; }
 .row-menu-item { @apply flex min-h-9 w-full items-center justify-start gap-2 rounded-lg border-transparent bg-transparent px-2.5 py-2 text-left text-sm font-normal hover:bg-secondary; }
 .row-menu-item[data-copied="true"] { @apply text-success; }
+.row-menu-item[data-copied="false"] { @apply text-destructive; }
 .row-menu-item.destructive-menu-item { @apply text-destructive hover:bg-destructive-soft; }
 .clickable-row { @apply cursor-pointer transition-colors hover:bg-secondary/40 focus-within:bg-secondary/40; }
 .fake-check { @apply inline-block size-5 rounded-md border border-border-strong bg-background-subtle; }
@@ -224,6 +225,7 @@
 .secret-field input { @apply min-w-0 flex-1 border-0 bg-transparent font-mono tracking-wide shadow-none focus-visible:ring-0; }
 .secret-field .icon-button { @apply size-8 min-h-8 shrink-0 p-0; }
 .secret-field button[data-copied="true"] { @apply text-success; }
+.secret-field button[data-copied="false"] { @apply text-destructive; }
 .secret-hide-icon { @apply hidden; }
 [data-secret-toggle][aria-pressed="true"] .secret-show-icon { @apply hidden; }
 [data-secret-toggle][aria-pressed="true"] .secret-hide-icon { @apply block; }
@@ -507,3 +509,15 @@
 .email-metadata,.webhook-metadata{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;margin:28px 0;overflow-wrap:anywhere}.email-metadata label,.webhook-metadata label{display:block;color:var(--muted-foreground,#999);font-size:11px;letter-spacing:.04em;margin-bottom:8px}.webhook-metadata{grid-template-columns:1fr .65fr .65fr 1.7fr}.webhook-event-layout{display:grid;grid-template-columns:minmax(240px,.85fr) minmax(0,1fr);gap:32px}.webhook-event-list{display:flex;flex-direction:column;gap:6px}.webhook-event{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:8px;gap:12px;font-size:13px}.webhook-event.selected,.webhook-event:hover{background:#191b20}.webhook-event small{color:#999}.code-block{position:relative;background:#0d0f12;border:1px solid #27292f;border-radius:9px;margin:12px 0 28px}.code-block>button{position:absolute;right:8px;top:8px;font-size:11px}.code-block pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:520px;overflow:auto;padding:42px 16px 18px;font-size:12px}.transactional-preview{width:100%;min-height:600px;border:0;background:white;border-radius:10px}.webhook-event-layout .section-head{margin-bottom:20px}.email-metadata code{font-size:12px}.webhook-metadata .secret-field input{min-width:0}@media(max-width:800px){.webhook-metadata,.email-metadata{grid-template-columns:1fr 1fr}.webhook-event-layout{grid-template-columns:1fr}.webhook-event-list{max-height:300px;overflow:auto}}@media(max-width:480px){.webhook-metadata,.email-metadata{grid-template-columns:1fr}}
 .webhook-event-options{position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:60}.webhook-event-options[hidden]{display:none}
 .dns-migration-confirm{display:flex;align-items:flex-start;gap:.625rem;margin:1rem 0}.dns-migration-confirm input{width:auto;flex:0 0 auto;margin-top:.25rem}
+
+/* Submit feedback: busy buttons and post-redirect toasts */
+button[aria-busy="true"] { @apply pointer-events-none relative opacity-70; cursor: progress; }
+button[aria-busy="true"]::after { content: ""; @apply ml-2 inline-block size-3.5 shrink-0 rounded-full border-2 border-current border-r-transparent align-[-2px]; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.toast-region { @apply pointer-events-none fixed bottom-4 right-4 z-50 flex max-w-[calc(100vw-2rem)] flex-col items-end gap-2; }
+.toast { @apply pointer-events-auto rounded-xl border border-l-4 bg-popover px-4 py-3 text-sm font-medium text-foreground shadow-2xl; animation: toast-in .18s ease-out; transition: opacity .2s, transform .2s; }
+.toast-success { @apply border-border border-l-success; }
+.toast-error { @apply border-border border-l-destructive; }
+.toast[data-leaving="true"] { opacity: 0; transform: translateY(6px); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
+@media (prefers-reduced-motion: reduce) { button[aria-busy="true"]::after, .toast { animation: none; } }

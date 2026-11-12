@@ -135,9 +135,58 @@ if (editor && input) {
   });
 }
 
+// In-page confirmation instead of window.confirm(), which some browsers and embedded views
+// suppress (returning false without showing anything), silently cancelling the action.
+// The answer is settled from the button clicks / Escape directly rather than the dialog's
+// "close" event, which Chromium can hold back indefinitely in an unfocused or throttled tab.
+let confirmDialog: HTMLDialogElement | null = null;
+let settleConfirmation: ((confirmed: boolean) => void) | null = null;
+function finishConfirmation(confirmed: boolean): void {
+  const settle = settleConfirmation;
+  settleConfirmation = null;
+  confirmDialog?.close();
+  settle?.(confirmed);
+}
+function getConfirmDialog(): HTMLDialogElement {
+  if (confirmDialog) return confirmDialog;
+  const dialog = document.createElement("dialog");
+  dialog.className = "modal confirm-modal";
+  dialog.innerHTML = `<div class="modal-card"><header class="modal-head"><h2>Are you sure?</h2></header><p class="modal-content" data-confirm-message></p><div class="modal-actions"><button type="button" data-confirm-accept></button><button type="button" data-confirm-cancel>Cancel</button></div></div>`;
+  dialog.querySelector("[data-confirm-accept]")!.addEventListener("click", () => finishConfirmation(true));
+  dialog.querySelector("[data-confirm-cancel]")!.addEventListener("click", () => finishConfirmation(false));
+  dialog.addEventListener("cancel", (event) => { event.preventDefault(); finishConfirmation(false); });
+  dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); finishConfirmation(false); } });
+  dialog.addEventListener("click", (event) => { if (event.target === dialog) finishConfirmation(false); });
+  document.body.append(dialog);
+  confirmDialog = dialog;
+  return dialog;
+}
+
+function askConfirmation(message: string, acceptLabel: string, destructive: boolean): Promise<boolean> {
+  finishConfirmation(false);
+  const dialog = getConfirmDialog();
+  dialog.querySelector<HTMLElement>("[data-confirm-message]")!.textContent = message;
+  const accept = dialog.querySelector<HTMLButtonElement>("[data-confirm-accept]")!;
+  accept.textContent = acceptLabel;
+  accept.className = destructive ? "danger" : "primary";
+  dialog.showModal();
+  dialog.querySelector<HTMLButtonElement>("[data-confirm-cancel]")!.focus();
+  return new Promise((resolve) => { settleConfirmation = resolve; });
+}
+
 for (const form of document.querySelectorAll<HTMLFormElement>("form[data-confirm]")) {
-  form.addEventListener("submit", (event) => {
-    if (!window.confirm(form.dataset.confirm ?? "Are you sure?")) event.preventDefault();
+  form.addEventListener("submit", async (event) => {
+    if (form.dataset.confirmed === "true") {
+      delete form.dataset.confirmed;
+      return;
+    }
+    event.preventDefault();
+    const submitter = event.submitter instanceof HTMLButtonElement ? event.submitter : null;
+    const label = (submitter && buttonLabel(submitter)) || "Confirm";
+    const destructive = Boolean(submitter?.matches(".danger, .destructive-menu-item"));
+    if (!(await askConfirmation(form.dataset.confirm ?? "Are you sure?", label, destructive))) return;
+    form.dataset.confirmed = "true";
+    form.requestSubmit(submitter);
   });
 }
 
@@ -146,30 +195,57 @@ for (const button of document.querySelectorAll<HTMLButtonElement>("[data-copy-va
     const target = button.dataset.copyTarget ? document.getElementById(button.dataset.copyTarget) : null;
     const value = button.dataset.copyValue ?? (target instanceof HTMLInputElement ? target.value : target?.textContent ?? "");
     if (!value) return;
-    try {
-      await navigator.clipboard.writeText(value);
-    } catch {
-      const textarea = document.createElement("textarea");
-      textarea.value = value;
-      textarea.setAttribute("readonly", "");
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      document.body.append(textarea);
-      textarea.select();
-      document.execCommand("copy");
-      textarea.remove();
-    }
+    const copied = await copyText(value, button);
     const label = button.querySelector<HTMLElement>("[data-copy-text]");
     const originalLabel = label?.textContent ?? "";
-    if (label) label.textContent = "Copied";
-    button.dataset.copied = "true";
+    if (label) label.textContent = copied ? "Copied" : "Copy failed";
+    button.dataset.copied = String(copied);
+    if (!copied && target instanceof HTMLInputElement) {
+      // Leave the value selected so the user can copy it manually.
+      target.type = "text";
+      target.focus();
+      target.select();
+    }
     const menu = button.closest<HTMLElement>("[data-action-menu]");
-    if (menu && "hidePopover" in menu) menu.hidePopover();
+    if (copied && menu && "hidePopover" in menu) menu.hidePopover();
     window.setTimeout(() => {
       if (label) label.textContent = originalLabel;
       delete button.dataset.copied;
     }, 1600);
   });
+}
+
+async function copyText(value: string, origin: HTMLElement): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    // Clipboard API is missing (non-secure context) or denied; fall back to execCommand.
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.top = "0";
+  textarea.style.left = "0";
+  textarea.style.opacity = "0";
+  // While a modal <dialog> or popover is open, everything outside it is inert and cannot be
+  // selected, so the helper must live inside the same top-layer element as the button.
+  const host = origin.closest<HTMLElement>("dialog, [popover]") ?? document.body;
+  host.append(textarea);
+  const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  textarea.focus();
+  textarea.select();
+  let copied = false;
+  try {
+    // An inert helper can't take focus; execCommand would then report success while copying nothing.
+    copied = document.activeElement === textarea && document.execCommand("copy");
+  } catch {
+    copied = false;
+  }
+  textarea.remove();
+  previousFocus?.focus();
+  return copied;
 }
 
 for (const button of document.querySelectorAll<HTMLButtonElement>("[data-secret-toggle]")) {
@@ -335,4 +411,116 @@ for (const form of document.querySelectorAll<HTMLFormElement>("[data-webhook-for
   document.addEventListener("pointerdown", event => { if (event.target instanceof Node && !form.querySelector("[data-webhook-event-picker]")?.contains(event.target)) close(); });
   form.addEventListener("submit", event => { if (value.value !== "email.received") event.preventDefault(); });
   update();
+}
+
+// ---- Submit feedback -------------------------------------------------------
+// Admin forms are plain POST + redirect, so without help the only signal is the page reloading.
+// While a request is in flight the clicked button shows a busy state (and repeat submits are
+// ignored); after the redirect a short toast confirms what happened.
+
+const NOTICE_KEY = "open-resend:notice";
+const PAST_TENSE: Record<string, string> = {
+  add: "added", create: "created", save: "saved", update: "updated", delete: "deleted", remove: "removed",
+  revoke: "revoked", send: "sent", cancel: "cancelled", sync: "synced", enable: "enabled", disable: "disabled",
+  schedule: "scheduled", replay: "replayed",
+};
+
+function buttonLabel(button: HTMLElement): string {
+  const clone = button.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll("kbd, svg, .sr-only").forEach((node) => node.remove());
+  return (clone.textContent ?? "").replace(/\s+/g, " ").trim().replace(/^[^\p{L}]+/u, "");
+}
+
+function successMessage(form: HTMLFormElement, submitter: HTMLElement | null): string | null {
+  const template = submitter?.dataset.success ?? form.dataset.success;
+  if (template !== undefined) {
+    return template.replace(/\{(\w+)\}/g, (_, name: string) => {
+      const field = form.elements.namedItem(name);
+      return field instanceof HTMLInputElement || field instanceof HTMLSelectElement || field instanceof HTMLTextAreaElement ? field.value : "";
+    }) || null;
+  }
+  const label = submitter ? buttonLabel(submitter) : "";
+  const [verb = "", ...rest] = label.split(" ");
+  const past = PAST_TENSE[verb.toLowerCase()];
+  if (!past) return null;
+  const object = rest.join(" ");
+  if (!object || /^(and|&|now)\b/i.test(object)) return `${past[0].toUpperCase()}${past.slice(1)}.`;
+  return `${object[0].toUpperCase()}${object.slice(1)} ${past}.`;
+}
+
+function setBusy(button: HTMLElement | null, busy: boolean): void {
+  if (!button) return;
+  if (busy) button.setAttribute("aria-busy", "true");
+  else button.removeAttribute("aria-busy");
+}
+
+document.addEventListener("submit", (event) => {
+  const form = event.target;
+  if (!(form instanceof HTMLFormElement) || event.defaultPrevented) return;
+  const method = (event.submitter?.getAttribute("formmethod") ?? form.method).toLowerCase();
+  if (method === "dialog") return;
+  if (form.dataset.submitting === "true") {
+    event.preventDefault();
+    return;
+  }
+  // Custom pickers keep their value in a hidden input, which native `required` ignores.
+  const required = form.dataset.requireField ? form.elements.namedItem(form.dataset.requireField) : null;
+  if (required instanceof HTMLInputElement && !required.value) {
+    event.preventDefault();
+    showToast(form.dataset.requireMessage ?? "Fill in the required field first.", "error");
+    return;
+  }
+  form.dataset.submitting = "true";
+  const submitter = event.submitter instanceof HTMLElement ? event.submitter : form.querySelector<HTMLElement>("button:not([type=button]), [type=submit]");
+  setBusy(submitter, true);
+  if (method === "post") {
+    const message = successMessage(form, submitter);
+    try {
+      if (message) sessionStorage.setItem(NOTICE_KEY, message);
+      else sessionStorage.removeItem(NOTICE_KEY);
+    } catch { /* storage unavailable: skip the toast */ }
+  }
+});
+
+// Back/forward cache restores the page as it was when we left it, busy buttons included.
+window.addEventListener("pageshow", (event) => {
+  if (!event.persisted) return;
+  for (const form of document.querySelectorAll<HTMLFormElement>("form[data-submitting]")) delete form.dataset.submitting;
+  for (const button of document.querySelectorAll<HTMLElement>("[aria-busy=true]")) setBusy(button, false);
+});
+
+function showToast(message: string, tone: "success" | "error" = "success"): void {
+  let region = document.querySelector<HTMLElement>(".toast-region");
+  if (!region) {
+    region = document.createElement("div");
+    region.className = "toast-region";
+    region.setAttribute("role", "status");
+    region.setAttribute("aria-live", "polite");
+    document.body.append(region);
+  }
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${tone}`;
+  toast.textContent = message;
+  region.append(toast);
+  window.setTimeout(() => {
+    toast.dataset.leaving = "true";
+    window.setTimeout(() => toast.remove(), 200);
+  }, 4000);
+}
+
+{
+  let notice: string | null = null;
+  try {
+    notice = sessionStorage.getItem(NOTICE_KEY);
+    sessionStorage.removeItem(NOTICE_KEY);
+  } catch { /* storage unavailable */ }
+  // The admin error page renders its own message; only confirm actions that actually succeeded.
+  if (notice && !document.querySelector(".panel.error")) showToast(notice);
+}
+
+for (const button of document.querySelectorAll<HTMLElement>("[data-history-back]")) {
+  button.addEventListener("click", () => {
+    if (history.length > 1) history.back();
+    else window.location.assign("/");
+  });
 }
