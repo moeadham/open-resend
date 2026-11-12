@@ -7,13 +7,14 @@ import { AppError, appErrorResponse, assertIsoFuture, escapeHtml, isEmail, norma
 import type { BroadcastRow, ContactRow, SegmentRow, SenderRow, TopicRow } from "./types";
 import { DatePicker } from "./ui/date-picker";
 import { Button } from "./ui/button";
-import { AddIcon, AudienceIcon, BroadcastIcon, CalendarIcon, CheckIcon, CloseIcon, CopyIcon, DomainIcon, EditIcon, EllipsisIcon, EyeIcon, EyeOffIcon, InfoIcon, KeyIcon, SearchIcon } from "./ui/icon";
+import { AddIcon, AudienceIcon, BroadcastIcon, CalendarIcon, CheckIcon, CloseIcon, CopyIcon, DomainIcon, EditIcon, EllipsisIcon, EyeIcon, EyeOffIcon, InfoIcon, KeyIcon, SearchIcon, SettingsIcon } from "./ui/icon";
 import { syncSendingDomains } from "./cloudflare";
 import { imagesApp } from "./images";
 import { EMAIL_IMAGE_ROW_CSS } from "./email-layout";
 import { loadBroadcastResults } from "./broadcast-results";
 import { BroadcastResultsPanel } from "./ui/broadcast-results";
 import type { DomainRow } from "./types";
+import { getEmailRetentionDays, MAX_EMAIL_RETENTION_DAYS, parseEmailRetentionDays, setEmailRetentionDays } from "./settings";
 
 type Bindings = { Bindings: Env };
 type AdminContext = Context<Bindings>;
@@ -480,6 +481,20 @@ adminApp.post("/api-keys", async (c) => {
 });
 adminApp.post("/api-keys/:id/revoke", async (c) => { await c.env.DB.prepare("UPDATE api_keys SET revoked_at=? WHERE id=?").bind(nowIso(), c.req.param("id")).run(); return c.redirect("/api-keys", 303); });
 
+adminApp.get("/settings", async (c) => {
+  const retentionDays = await getEmailRetentionDays(c.env.DB);
+  const saved = c.req.query("saved") === "1";
+  return c.html(<Layout title="Settings"><PageHead title="Settings"/>
+    {saved && <div class="panel sync-result"><strong>Settings saved.</strong><span>Emails older than {retentionDays} day{retentionDays === 1 ? "" : "s"} are hidden now and permanently deleted within the hour.</span></div>}
+    <section class="panel"><h2 class="section-title">Email retention</h2><p class="muted">Sent and received emails, their attachments, and their webhook history are permanently deleted once they are older than this. Changes apply to emails already stored, not just new ones.</p>
+      <form method="post" action="/settings" data-confirm="Emails older than the new retention period will be permanently deleted. Continue?"><label for="email-retention-days">Keep emails for (days)</label><input id="email-retention-days" name="email_retention_days" type="number" min={1} max={MAX_EMAIL_RETENTION_DAYS} step={1} required value={String(retentionDays)}/><p class="field-help">Between 1 and {MAX_EMAIL_RETENTION_DAYS} days. Default is 30.</p><div class="actions form-actions"><button class="primary">Save settings</button></div></form></section></Layout>);
+});
+adminApp.post("/settings", async (c) => {
+  const form = await c.req.parseBody();
+  await setEmailRetentionDays(c.env.DB, parseEmailRetentionDays(form.email_retention_days));
+  return c.redirect("/settings?saved=1", 303);
+});
+
 async function apiKeysPage(c: AdminContext, createdKey?: string) {
   const search = c.req.query("search")?.trim() ?? "";
   const rows = await c.env.DB.prepare(`SELECT id,name,prefix,created_at,last_used_at,revoked_at FROM api_keys ${search ? "WHERE name LIKE ?" : ""} ORDER BY created_at DESC`).bind(...(search ? [`%${search}%`] : [])).all<{ id: string; name: string; prefix: string; created_at: string; last_used_at: string | null; revoked_at: string | null }>();
@@ -487,8 +502,8 @@ async function apiKeysPage(c: AdminContext, createdKey?: string) {
 }
 
 export function Layout({ title, children }: { title: string; children: Child }) {
-  const active = title === "Emails" ? "emails" : title === "Webhooks" ? "webhooks" : title.toLowerCase().includes("broadcast") ? "broadcasts" : title.toLowerCase().includes("audience") ? "audience" : title.toLowerCase().includes("domain") || title.toLowerCase().includes("sender") ? "domains" : title.toLowerCase().includes("api key") ? "keys" : "";
-  return <html lang="en" class="dark"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>{title} · Open Re-send</title><link rel="stylesheet" href="/assets/admin.css"/></head><body><div class="app-shell"><aside class="sidebar"><a class="workspace" href="/broadcasts"><span class="workspace-mark">OR</span><span>Open Re-send</span></a><nav class="side-nav"><NavLink href="/emails" icon={<AudienceIcon class="size-4"/>} label="Emails" active={active === "emails"}/><NavLink href="/webhooks" icon={<BroadcastIcon class="size-4"/>} label="Webhooks" active={active === "webhooks"}/><NavLink href="/broadcasts" icon={<BroadcastIcon class="size-4"/>} label="Broadcasts" active={active === "broadcasts"}/><NavLink href="/audience" icon={<AudienceIcon class="size-4"/>} label="Audience" active={active === "audience"}/><NavLink href="/senders" icon={<DomainIcon class="size-4"/>} label="Domains" active={active === "domains"}/><NavLink href="/api-keys" icon={<KeyIcon class="size-4"/>} label="API keys" active={active === "keys"}/></nav><div class="side-foot">Protected by Cloudflare Access</div></aside><main class="main"><div class="content">{children}</div></main></div><script type="module" src="/assets/admin.js"></script></body></html>;
+  const active = title === "Emails" ? "emails" : title === "Settings" ? "settings" : title === "Webhooks" ? "webhooks" : title.toLowerCase().includes("broadcast") ? "broadcasts" : title.toLowerCase().includes("audience") ? "audience" : title.toLowerCase().includes("domain") || title.toLowerCase().includes("sender") ? "domains" : title.toLowerCase().includes("api key") ? "keys" : "";
+  return <html lang="en" class="dark"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>{title} · Open Re-send</title><link rel="stylesheet" href="/assets/admin.css"/></head><body><div class="app-shell"><aside class="sidebar"><a class="workspace" href="/broadcasts"><span class="workspace-mark">OR</span><span>Open Re-send</span></a><nav class="side-nav"><NavLink href="/emails" icon={<AudienceIcon class="size-4"/>} label="Emails" active={active === "emails"}/><NavLink href="/webhooks" icon={<BroadcastIcon class="size-4"/>} label="Webhooks" active={active === "webhooks"}/><NavLink href="/broadcasts" icon={<BroadcastIcon class="size-4"/>} label="Broadcasts" active={active === "broadcasts"}/><NavLink href="/audience" icon={<AudienceIcon class="size-4"/>} label="Audience" active={active === "audience"}/><NavLink href="/senders" icon={<DomainIcon class="size-4"/>} label="Domains" active={active === "domains"}/><NavLink href="/api-keys" icon={<KeyIcon class="size-4"/>} label="API keys" active={active === "keys"}/><NavLink href="/settings" icon={<SettingsIcon class="size-4"/>} label="Settings" active={active === "settings"}/></nav><div class="side-foot">Protected by Cloudflare Access</div></aside><main class="main"><div class="content">{children}</div></main></div><script type="module" src="/assets/admin.js"></script></body></html>;
 }
 function NavLink({ href, icon, label, active }: { href: string; icon: Child; label: string; active: boolean }) { return <a class={`side-link ${active ? "active" : ""}`} href={href}><span class="nav-icon">{icon}</span><span>{label}</span></a>; }
 export function PageHead({ title, children }: { title: string; children?: Child }) { return <div class="page-head"><h1>{title}</h1>{children && <div class="head-actions">{children}</div>}</div>; }

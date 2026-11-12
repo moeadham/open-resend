@@ -476,7 +476,7 @@ describe("transactional recovery and retention", () => {
     );
     expect((await fetch(rawUrl)).status).toBe(404);
     await worker.scheduled(
-      { scheduledTime: Date.now(), cron: "* * * * *", noRetry() {} },
+      { scheduledTime: Date.now(), cron: "0 * * * *", noRetry() {} },
       env,
     );
     expect(
@@ -487,6 +487,98 @@ describe("transactional recovery and retention", () => {
         "n",
       ),
     ).toBe(0);
+  });
+  it("applies the email retention setting to new and already stored emails", async () => {
+    const tick = () =>
+      worker.scheduled(
+        { scheduledTime: Date.now(), cron: "0 * * * *", noRetry() {} },
+        env,
+      );
+    const saveRetention = (days: string) =>
+      worker.fetch(
+        new Request("http://localhost/settings", {
+          method: "POST",
+          headers: {
+            Origin: "http://localhost",
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({ email_retention_days: days }),
+        }),
+        env,
+      );
+    expect((await saveRetention("0")).status).toBe(422);
+    expect((await saveRetention("1.5")).status).toBe(422);
+    expect((await saveRetention("7")).status).toBe(303);
+    expect(
+      await (await worker.fetch(new Request("http://localhost/settings"), env)).text(),
+    ).toContain('value="7"');
+
+    await worker.email(incoming(), env);
+    const fresh = await env.DB.prepare(
+      "SELECT id,created_at,expires_at FROM transactional_emails",
+    ).first<{ id: string; created_at: string; expires_at: string }>();
+    expect(Date.parse(fresh!.expires_at) - Date.parse(fresh!.created_at)).toBe(
+      7 * 86400_000,
+    );
+
+    // Extending retention keeps an email whose upload-time R2 expiry has passed.
+    const old = new Date(Date.now() - 10 * 86400_000).toISOString();
+    await env.DB.prepare("UPDATE transactional_emails SET created_at=?")
+      .bind(old)
+      .run();
+    expect((await saveRetention("30")).status).toBe(303);
+    const keys = (
+      await env.EMAIL_STORAGE.list({ prefix: `emails/${fresh!.id}/` })
+    ).objects.map((o) => o.key);
+    expect(keys.length).toBeGreaterThan(0);
+    for (const objectKey of keys) {
+      const object = await env.EMAIL_STORAGE.get(objectKey);
+      await env.EMAIL_STORAGE.put(objectKey, await object!.arrayBuffer(), {
+        customMetadata: { expires_at: new Date(Date.now() - 1000).toISOString() },
+      });
+    }
+    await tick();
+    expect((await resend.emails.receiving.get(fresh!.id)).data?.id).toBe(
+      fresh!.id,
+    );
+    expect(
+      (await env.EMAIL_STORAGE.list({ prefix: `emails/${fresh!.id}/` })).objects,
+    ).toHaveLength(keys.length);
+
+    // Shortening retention expires already stored emails on the next cron tick.
+    expect((await saveRetention("5")).status).toBe(303);
+    expect((await resend.emails.receiving.get(fresh!.id)).error?.name).toBe(
+      "not_found",
+    );
+    await tick();
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM transactional_emails").first(
+        "n",
+      ),
+    ).toBe(0);
+    expect(
+      (await env.EMAIL_STORAGE.list({ prefix: `emails/${fresh!.id}/` })).objects,
+    ).toHaveLength(0);
+  });
+  it("drains a bounded backlog of expired emails in one hourly run", async () => {
+    const expired = new Date(Date.now() - 1000).toISOString();
+    const insert = env.DB.prepare(
+      "INSERT INTO transactional_emails(id,direction,from_value,to_json,subject,status,created_at,expires_at,download_secret) VALUES(?,'receiving','a@example.net','[]','',?,?,?,'secret')",
+    );
+    await env.DB.batch(
+      Array.from({ length: 230 }, (_, i) =>
+        insert.bind(`expired-${String(i).padStart(3, "0")}`, "received", expired, expired),
+      ),
+    );
+    await env.EMAIL_STORAGE.put("emails/expired-000/raw.eml", "raw");
+    await worker.scheduled(
+      { scheduledTime: Date.now(), cron: "0 * * * *", noRetry() {} },
+      env,
+    );
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM transactional_emails").first("n"),
+    ).toBe(30);
+    expect(await env.EMAIL_STORAGE.get("emails/expired-000/raw.eml")).toBeNull();
   });
   it("rejects private destinations, header injection, malformed JSON, and attachment redirects", async () => {
     for (const endpoint of [
@@ -695,7 +787,7 @@ it("recovers provider events that arrive before the send result and ignores a la
     sendingEnv,
   );
   await worker.scheduled(
-    { scheduledTime: Date.now(), cron: "* * * * *", noRetry() {} },
+    { scheduledTime: Date.now(), cron: "0 * * * *", noRetry() {} },
     env,
   );
   expect((await resend.emails.get(sent.data!.id)).data?.last_event).toBe(

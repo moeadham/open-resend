@@ -23,6 +23,7 @@ import {
   type WebhookRow,
 } from "./webhooks";
 import { receivingAdmin } from "./receiving-domains";
+import { getEmailRetentionDays } from "./settings";
 
 export const transactionalAdmin = new Hono<{ Bindings: Env }>();
 transactionalAdmin.route("/receiving-domains", receivingAdmin);
@@ -40,10 +41,13 @@ transactionalAdmin.get("/emails", async (c) => {
     clauses.push("(from_value LIKE ? OR to_json LIKE ? OR subject LIKE ?)");
     binds.push(...Array(3).fill(`%${search}%`));
   }
+  const retentionDays = await getEmailRetentionDays(c.env.DB);
   if (Number.isFinite(days) && days > 0) {
     clauses.push("created_at>=?");
     binds.push(
-      new Date(Date.now() - Math.min(30, days) * 86400_000).toISOString(),
+      new Date(
+        Date.now() - Math.min(retentionDays, days) * 86400_000,
+      ).toISOString(),
     );
   }
   if (direction === "sending" && status) {
@@ -68,6 +72,11 @@ transactionalAdmin.get("/emails", async (c) => {
   return c.html(
     <Layout title="Emails">
       <PageHead title="Emails" />
+      <p class="muted">
+        Emails are deleted after {retentionDays}{" "}
+        {retentionDays === 1 ? "day" : "days"}.{" "}
+        <a href="/settings">Change retention</a>
+      </p>
       <div class="tabs">
         <a
           class={`tab ${direction === "sending" ? "active" : ""}`}
@@ -91,11 +100,16 @@ transactionalAdmin.get("/emails", async (c) => {
           aria-label="Search emails"
         />
         <select name="days" aria-label="Date range">
-          {[1, 7, 15, 30].map((d) => (
-            <option value={d} selected={days === d}>
-              Last {d} days
-            </option>
-          ))}
+          {[1, 7, 15, 30, 90, 365]
+            .filter((d) => d < retentionDays)
+            .map((d) => (
+              <option value={d} selected={days === d}>
+                Last {d} {d === 1 ? "day" : "days"}
+              </option>
+            ))}
+          <option value={0} selected={days === 0 || days >= retentionDays}>
+            All ({retentionDays} {retentionDays === 1 ? "day" : "days"} kept)
+          </option>
         </select>
         {direction === "sending" && (
           <>

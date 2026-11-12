@@ -5,8 +5,8 @@ import {
   boundedBytes,
   MAX_EMAIL_BYTES,
   randomSecret,
-  RETENTION_MS,
 } from "./email-security";
+import { emailExpiry, getEmailRetentionDays } from "./settings";
 import { nowIso, sha256 } from "./lib";
 import {
   objectKey,
@@ -173,7 +173,10 @@ export async function receiveEmail(
   }
   const id = crypto.randomUUID();
   const now = nowIso();
-  const expiresAt = new Date(Date.now() + RETENTION_MS).toISOString();
+  const expiresAt = emailExpiry(
+    Date.parse(now),
+    await getEmailRetentionDays(env.DB),
+  );
   const trustedAuthenticationHeader = message.headers.get(
     "authentication-results",
   );

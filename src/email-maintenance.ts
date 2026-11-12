@@ -2,6 +2,7 @@ import { nowIso } from "./lib";
 import { objectKey } from "./transactional-storage";
 import { publishWebhookOutbox } from "./webhooks";
 import type { EmailEventMessage } from "./types";
+import { getEmailRetentionDays } from "./settings";
 import {
   updateTransactionalStatus,
   applyTransactionalProviderEvent,
@@ -16,10 +17,11 @@ export async function maintainEmail(env: Env): Promise<void> {
       env,
       JSON.parse(event.payload_json) as EmailEventMessage,
     );
+  const retentionDays = await getEmailRetentionDays(env.DB);
   await env.DB.prepare(
     "UPDATE email_events SET payload_json=NULL WHERE received_at<? AND payload_json IS NOT NULL",
   )
-    .bind(new Date(Date.now() - 30 * 86400_000).toISOString())
+    .bind(new Date(Date.now() - retentionDays * 86400_000).toISOString())
     .run();
   try {
     await publishWebhookOutbox(env);
@@ -63,45 +65,88 @@ export async function maintainEmail(env: Env): Promise<void> {
       .run();
     await updateTransactionalStatus(env, email_id);
   }
-  const expired = await env.DB.prepare(
-    "SELECT id FROM transactional_emails WHERE expires_at<=? LIMIT 50",
-  )
-    .bind(nowIso())
-    .all<{ id: string }>();
-  for (const { id } of expired.results) {
-    let cursor: string | undefined;
-    do {
-      const list = await env.EMAIL_STORAGE.list({
-        prefix: objectKey(id, ""),
-        cursor,
-        limit: 1000,
-      });
-      if (list.objects.length)
-        await env.EMAIL_STORAGE.delete(list.objects.map((o) => o.key));
-      cursor = list.truncated ? list.cursor : undefined;
-    } while (cursor);
-    await env.DB.prepare("DELETE FROM transactional_emails WHERE id=?")
-      .bind(id)
-      .run();
-  }
-  // One bounded page per minute also removes uploads orphaned by an interrupted ingest.
-  const state = await env.EMAIL_STORAGE.get("maintenance/cursor");
-  const cursor = state ? await state.text() : undefined;
-  const objects = await env.EMAIL_STORAGE.list({
-    prefix: "emails/",
-    cursor: cursor || undefined,
-    include: ["customMetadata"],
-    limit: 100,
-  });
-  const remove = objects.objects
-    .filter(
-      (o) =>
-        o.customMetadata?.expires_at && o.customMetadata.expires_at <= nowIso(),
+  await deleteExpiredEmails(env);
+  await sweepOrphanedObjects(env);
+}
+
+// The cron runs hourly, so each run drains a larger, still bounded backlog.
+// Each email costs about two R2 subrequests; the cap keeps the whole
+// invocation well under the Workers subrequest limit.
+const EXPIRED_EMAILS_PER_RUN = 200;
+const SWEEP_PAGES_PER_RUN = 5;
+
+async function deleteExpiredEmails(env: Env): Promise<void> {
+  for (let done = 0; done < EXPIRED_EMAILS_PER_RUN; ) {
+    const expired = await env.DB.prepare(
+      "SELECT id FROM transactional_emails WHERE expires_at<=? LIMIT 50",
     )
-    .map((o) => o.key);
-  if (remove.length) await env.EMAIL_STORAGE.delete(remove);
-  await env.EMAIL_STORAGE.put(
-    "maintenance/cursor",
-    objects.truncated ? objects.cursor : "",
-  );
+      .bind(nowIso())
+      .all<{ id: string }>();
+    const ids = expired.results.map((row) => row.id);
+    if (!ids.length) return;
+    for (const id of ids) {
+      let cursor: string | undefined;
+      do {
+        const list = await env.EMAIL_STORAGE.list({
+          prefix: objectKey(id, ""),
+          cursor,
+          limit: 1000,
+        });
+        if (list.objects.length)
+          await env.EMAIL_STORAGE.delete(list.objects.map((o) => o.key));
+        cursor = list.truncated ? list.cursor : undefined;
+      } while (cursor);
+    }
+    // Rows go after their objects, so an interrupted run is retried next hour.
+    await env.DB.prepare(
+      `DELETE FROM transactional_emails WHERE id IN (${ids.map(() => "?").join(",")})`,
+    )
+      .bind(...ids)
+      .run();
+    done += ids.length;
+    if (ids.length < 50) return;
+  }
+}
+
+// Also removes uploads orphaned by an interrupted ingest. Resumes from a saved
+// cursor so successive runs walk the whole bucket.
+async function sweepOrphanedObjects(env: Env): Promise<void> {
+  const state = await env.EMAIL_STORAGE.get("maintenance/cursor");
+  let cursor = (state ? await state.text() : "") || undefined;
+  for (let page = 0; page < SWEEP_PAGES_PER_RUN; page++) {
+    const objects = await env.EMAIL_STORAGE.list({
+      prefix: "emails/",
+      cursor,
+      include: ["customMetadata"],
+      limit: 1000,
+    });
+    const candidates = objects.objects.filter(
+      (o) =>
+        o.customMetadata?.expires_at &&
+        o.customMetadata.expires_at <= nowIso(),
+    );
+    // Object metadata keeps the expiry from upload time. If retention was later
+    // extended, the email row is still live, so its files must be kept.
+    const candidateIds = [
+      ...new Set(candidates.map((o) => o.key.split("/")[1]!)),
+    ];
+    const live = new Set<string>();
+    // D1 allows at most 100 bound parameters per statement.
+    for (let i = 0; i < candidateIds.length; i += 90) {
+      const chunk = candidateIds.slice(i, i + 90);
+      const rows = await env.DB.prepare(
+        `SELECT id FROM transactional_emails WHERE expires_at>? AND id IN (${chunk.map(() => "?").join(",")})`,
+      )
+        .bind(nowIso(), ...chunk)
+        .all<{ id: string }>();
+      for (const row of rows.results) live.add(row.id);
+    }
+    const remove = candidates
+      .filter((o) => !live.has(o.key.split("/")[1]!))
+      .map((o) => o.key);
+    if (remove.length) await env.EMAIL_STORAGE.delete(remove);
+    cursor = objects.truncated ? objects.cursor : undefined;
+    if (!cursor) break;
+  }
+  await env.EMAIL_STORAGE.put("maintenance/cursor", cursor ?? "");
 }
