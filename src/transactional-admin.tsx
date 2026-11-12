@@ -502,7 +502,7 @@ transactionalAdmin.get("/webhooks/:id", async (c) => {
         </div>
       </div>
       <Modal id="edit-webhook" title="Edit webhook">
-        <form method="post">
+        <form method="post" data-success="Webhook saved.">
           <label>Endpoint URL</label>
           <input name="endpoint" type="url" value={row.endpoint} required />
           <label>Status</label>
@@ -564,6 +564,7 @@ transactionalAdmin.get("/webhooks/:id", async (c) => {
                 <form
                   method="post"
                   action={`/webhooks/${row.id}/replay/${event.event_id}`}
+                  data-success="Event queued for replay."
                 >
                   <button
                     disabled={
@@ -627,7 +628,7 @@ transactionalAdmin.get("/webhooks/:id", async (c) => {
 function WebhookModal() {
   return (
     <Modal id="add-webhook" title="Add webhook">
-      <form method="post" action="/webhooks" data-webhook-form>
+      <form method="post" action="/webhooks" data-webhook-form data-success="Webhook added.">
         <label for="webhook-endpoint">Endpoint URL</label>
         <input
           id="webhook-endpoint"
