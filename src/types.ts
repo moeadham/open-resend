@@ -16,7 +16,7 @@ export type EmailEventMessage = {
     messageId?: string;
     recipient?: string;
     terminal?: boolean;
-    delivery?: { status?: string };
+    delivery?: { status?: string; smtpResponse?: string };
     bounce?: { type?: string; reason?: string };
     failure?: { reason?: string };
     rejection?: { reason?: string; detail?: string };

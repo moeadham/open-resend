@@ -321,8 +321,11 @@ async function setDeliveryStatus(db: D1Database, id: string, status: string, err
 }
 
 async function finishBroadcastIfComplete(db: D1Database, broadcastId: string): Promise<void> {
+  // A delivery with a provider message ID has been handed off. A later provider "deferred" event
+  // means Cloudflare is retrying it, not that this broadcast still has sending work to do.
   const unfinished = await db.prepare(
-    "SELECT COUNT(*) AS count FROM deliveries WHERE broadcast_id = ? AND status IN ('pending', 'enqueued', 'sending', 'deferred')",
+    `SELECT COUNT(*) AS count FROM deliveries WHERE broadcast_id = ?
+       AND (status IN ('pending', 'enqueued', 'sending') OR (status = 'deferred' AND message_id IS NULL))`,
   ).bind(broadcastId).first<{ count: number }>();
   if (Number(unfinished?.count ?? 0) === 0) {
     await db.prepare(
@@ -350,10 +353,17 @@ export async function processEmailEvent(message: Message<EmailEventMessage>, env
   const messageId = event.payload.messageId;
   if (messageId && ["delivered", "deferred", "bounced", "failed", "rejected", "complained"].includes(status ?? "")) {
     await applyTransactionalProviderEvent(env, event);
-    const reason = event.payload.bounce?.reason ?? event.payload.failure?.reason ?? event.payload.rejection?.detail ?? null;
-    await env.DB.prepare(
-      "UPDATE deliveries SET status = ?, last_error = ?, updated_at = ? WHERE message_id = ?",
-    ).bind(status, reason, nowIso(), messageId).run();
+    const reason = event.payload.bounce?.reason ?? event.payload.failure?.reason ?? event.payload.rejection?.detail ?? event.payload.delivery?.smtpResponse ?? null;
+    // Final outcomes stick: a late or replayed "deferred"/"delivered" event must not undo them,
+    // though a bounce or complaint may still follow a delivery.
+    const updated = await env.DB.prepare(
+      `UPDATE deliveries SET status = ?, last_error = ?, updated_at = ?
+       WHERE message_id = ?
+         AND (status NOT IN ('delivered', 'bounced', 'failed', 'rejected', 'complained')
+              OR ? IN ('bounced', 'failed', 'rejected', 'complained'))
+       RETURNING broadcast_id`,
+    ).bind(status, reason, nowIso(), messageId, status).first<{ broadcast_id: string }>();
+    if (updated) await finishBroadcastIfComplete(env.DB, updated.broadcast_id);
 
     if (status === "complained" || (status === "bounced" && event.payload.bounce?.type === "hard")) {
       await env.DB.prepare(
