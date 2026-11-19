@@ -2,7 +2,7 @@ import { transactionalAdmin } from "./transactional-admin";
 import { Hono, type Context } from "hono";
 import type { Child } from "hono/jsx";
 import { requireAccess, requireSameOrigin } from "./auth";
-import { enqueueBroadcast, retryFailedDeliveries, sendTestEmail, validateBroadcastReady } from "./delivery";
+import { enqueueBroadcast, hasEarlierQueuedBroadcast, retryFailedDeliveries, sendTestEmail, validateBroadcastReady } from "./delivery";
 import { AppError, appErrorResponse, assertIsoFuture, escapeHtml, isEmail, normalizeEmail, normalizeLineEndings, nowIso, parseUnsubscribeHostnames, randomToken, sha256, stripHtml } from "./lib";
 import type { BroadcastRow, ContactRow, SegmentRow, SenderRow, TopicRow } from "./types";
 import { DatePicker } from "./ui/date-picker";
@@ -14,6 +14,7 @@ import { EMAIL_IMAGE_ROW_CSS } from "./email-layout";
 import { loadBroadcastResults } from "./broadcast-results";
 import { BroadcastResultsPanel } from "./ui/broadcast-results";
 import type { DomainRow } from "./types";
+import { DEFAULT_BROADCAST_DAILY_LIMIT, getBroadcastBudget, MAX_BROADCAST_DAILY_LIMIT, parseBroadcastDailyLimit, setBroadcastDailyLimit } from "./broadcast-budget";
 import { getEmailRetentionDays, MAX_EMAIL_RETENTION_DAYS, parseEmailRetentionDays, setEmailRetentionDays } from "./settings";
 
 type Bindings = { Bindings: Env };
@@ -322,8 +323,10 @@ adminApp.get("/broadcasts/:id", async (c) => {
   const isDraft = broadcast.status === "draft";
   const showResults = !isDraft && broadcast.status !== "scheduled";
   const hasFailures = (results.counts.failed ?? 0) > 0;
+  const pacing = await broadcastPacingNote(c.env.DB, broadcast.id, broadcast.status, results.counts.pending ?? 0);
   return c.html(<Layout title={broadcast.name}>
     <div class="broadcast-review-head"><div><a class="crumb" href="/broadcasts">← Broadcasts</a><div class="broadcast-title-line"><h1>{broadcast.name}</h1><span class={`badge ${broadcast.status}`}>{broadcast.status}</span></div><p>{broadcast.subject}</p></div><div class="actions"><ActionMenu id={`broadcast-detail-${broadcast.id}`}><CopyIdMenuItem id={broadcast.id}/></ActionMenu>{isDraft && <a class="button" href={`/broadcasts/${broadcast.id}/editor`}><EditIcon class="size-4"/>Edit broadcast</a>}{!['sent','cancelled','draft'].includes(broadcast.status) && <form method="post" action={`/broadcasts/${broadcast.id}/cancel`} data-confirm="Cancel unsent deliveries?"><button class="danger">Cancel broadcast</button></form>}</div></div>
+    {pacing && <div class="panel sync-result broadcast-pacing" role="status"><strong>{pacing.title}</strong><span>{pacing.detail}</span></div>}
     {showResults && <BroadcastResultsPanel id={broadcast.id} results={results} status={broadcast.status} canRetry={broadcast.status !== "cancelled" && hasFailures}/>}
     <div class={showResults ? "broadcast-review-layout results-layout" : "broadcast-review-layout"}>
       <div class="broadcast-preview-column"><section class="email-preview-card" data-email-preview><header><div><span class="eyebrow">Email preview</span><h2>{broadcast.subject}</h2>{broadcast.preview_text && <p>{broadcast.preview_text}</p>}</div></header>
@@ -482,17 +485,24 @@ adminApp.post("/api-keys", async (c) => {
 adminApp.post("/api-keys/:id/revoke", async (c) => { await c.env.DB.prepare("UPDATE api_keys SET revoked_at=? WHERE id=?").bind(nowIso(), c.req.param("id")).run(); return c.redirect("/api-keys", 303); });
 
 adminApp.get("/settings", async (c) => {
-  const retentionDays = await getEmailRetentionDays(c.env.DB);
+  const [retentionDays, broadcastBudget] = await Promise.all([getEmailRetentionDays(c.env.DB), getBroadcastBudget(c.env.DB)]);
   const saved = c.req.query("saved") === "1";
   return c.html(<Layout title="Settings"><PageHead title="Settings"/>
     {saved && <div class="panel sync-result"><strong>Settings saved.</strong><span>Emails older than {retentionDays} day{retentionDays === 1 ? "" : "s"} are hidden now and permanently deleted within the hour.</span></div>}
     <section class="panel"><h2 class="section-title">Email retention</h2><p class="muted">Sent and received emails, their attachments, and their webhook history are permanently deleted once they are older than this. Changes apply to emails already stored, not just new ones.</p>
-      <form method="post" action="/settings" data-confirm="Emails older than the new retention period will be permanently deleted. Continue?"><label for="email-retention-days">Keep emails for (days)</label><input id="email-retention-days" name="email_retention_days" type="number" min={1} max={MAX_EMAIL_RETENTION_DAYS} step={1} required value={String(retentionDays)}/><p class="field-help">Between 1 and {MAX_EMAIL_RETENTION_DAYS} days. Default is 30.</p><div class="actions form-actions"><button class="primary">Save settings</button></div></form></section></Layout>);
+      <form method="post" action="/settings" data-confirm="Emails older than the new retention period will be permanently deleted. Continue?"><label for="email-retention-days">Keep emails for (days)</label><input id="email-retention-days" name="email_retention_days" type="number" min={1} max={MAX_EMAIL_RETENTION_DAYS} step={1} required value={String(retentionDays)}/><p class="field-help">Between 1 and {MAX_EMAIL_RETENTION_DAYS} days. Default is 30.</p><div class="actions form-actions"><button class="primary">Save settings</button></div></form></section>
+    <section class="panel"><h2 class="section-title">Broadcast sending limit</h2><p class="muted">The most broadcast emails sent in any 24 hours, shared by all broadcasts. A 24-hour window starts with the first broadcast email sent after the previous window ends. Recipients beyond the limit wait in the queue and send automatically when the window resets, oldest broadcast first. Transactional email and test emails are not counted.</p>
+      <form method="post" action="/settings/broadcast-limit" data-success="Broadcast sending limit saved."><label for="broadcast-daily-limit">Broadcast emails per 24 hours</label><input id="broadcast-daily-limit" name="broadcast_daily_limit" type="number" min={1} max={MAX_BROADCAST_DAILY_LIMIT} step={1} required value={String(broadcastBudget.limit)}/><p class="field-help">Default is {DEFAULT_BROADCAST_DAILY_LIMIT.toLocaleString("en")}. Keep it below your Cloudflare Email Sending quota, leaving room for transactional email. {broadcastBudget.resetsAt ? `${broadcastBudget.used.toLocaleString("en")} sent in the current window, which resets ${formatUtc(broadcastBudget.resetsAt)}.` : "No window is open; the next broadcast email starts one."}</p><div class="actions form-actions"><button class="primary">Save limit</button></div></form></section></Layout>);
 });
 adminApp.post("/settings", async (c) => {
   const form = await c.req.parseBody();
   await setEmailRetentionDays(c.env.DB, parseEmailRetentionDays(form.email_retention_days));
   return c.redirect("/settings?saved=1", 303);
+});
+adminApp.post("/settings/broadcast-limit", async (c) => {
+  const form = await c.req.parseBody();
+  await setBroadcastDailyLimit(c.env.DB, parseBroadcastDailyLimit(form.broadcast_daily_limit));
+  return c.redirect("/settings", 303);
 });
 
 async function apiKeysPage(c: AdminContext, createdKey?: string) {
@@ -563,6 +573,25 @@ function postalAddressField(value: string | File | undefined): string { const re
 function assertSafeSenderText(value: string, field: string, allowLineFeeds: boolean): void { const invalid = allowLineFeeds ? /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/ : /[\u0000-\u001F\u007F]/; if (invalid.test(value)) throw new AppError(422, "validation_error", `${field} contains invalid control characters.`); }
 function rethrowSenderEmailConflict(error: unknown): never { if (error instanceof Error && /UNIQUE constraint failed: senders\.email/i.test(error.message)) throw new AppError(409, "conflict", "A sender with this email already exists."); throw error; }
 function capitalize(value: string): string { return value.charAt(0).toUpperCase() + value.slice(1); }
+/** Explains why a queueing broadcast is not handing recipients to the delivery queue yet. */
+async function broadcastPacingNote(db: D1Database, broadcastId: string, status: string, waiting: number): Promise<{ title: string; detail: string } | null> {
+  if (status !== "queueing" || waiting === 0) return null;
+  const budget = await getBroadcastBudget(db);
+  const recipients = `${waiting.toLocaleString("en")} recipient${waiting === 1 ? "" : "s"}`;
+  if (budget.exhausted && budget.resetsAt) {
+    return { title: "24-hour broadcast limit reached", detail: `${budget.used.toLocaleString("en")} of ${budget.limit.toLocaleString("en")} broadcast emails sent in this window. ${recipients} will send automatically when it resets ${formatUtc(budget.resetsAt)}.` };
+  }
+  if (await hasEarlierQueuedBroadcast(db, broadcastId)) {
+    return { title: "Waiting for an earlier broadcast", detail: `${recipients} will start sending once earlier broadcasts have finished using the 24-hour limit.` };
+  }
+  return null;
+}
+export function formatUtc(value: string): string {
+  const date = new Date(value);
+  const minutes = Math.max(0, Math.round((date.getTime() - Date.now()) / 60_000));
+  const inText = minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  return `at ${date.toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" })} UTC (in ${inText})`;
+}
 export function relativeDate(value: string): string { const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000)); if (seconds < 60) return "just now"; if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`; if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`; if (seconds < 2_592_000) return `${Math.floor(seconds / 86400)}d ago`; return new Date(value).toLocaleDateString("en", { month: "short", day: "numeric", year: new Date(value).getFullYear() === new Date().getFullYear() ? undefined : "numeric" }); }
 function formatDateTime(value: string): string { return new Date(value).toLocaleString("en", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }) + " UTC"; }
 function scheduleTimeOptions(): string[] { return Array.from({ length: 48 }, (_, index) => `${String(Math.floor(index / 2)).padStart(2, "0")}:${index % 2 ? "30" : "00"}`); }

@@ -92,6 +92,7 @@ export type BroadcastRow = {
   status: string;
   scheduled_at: string | null;
   sent_at: string | null;
+  queued_at?: string | null;
   created_at: string;
   updated_at: string;
 };
