@@ -1,6 +1,6 @@
 import { AppError, nowIso } from "./lib";
 
-export const DEFAULT_BROADCAST_DAILY_LIMIT = 50_000;
+export const DEFAULT_BROADCAST_DAILY_LIMIT = 900;
 export const MAX_BROADCAST_DAILY_LIMIT = 10_000_000;
 export const BROADCAST_BUDGET_WINDOW_MS = 24 * 60 * 60 * 1000;
 const BROADCAST_DAILY_LIMIT_KEY = "broadcast_daily_limit";

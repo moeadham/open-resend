@@ -20,9 +20,9 @@ beforeEach(async () => {
 });
 
 describe("broadcast send budget", () => {
-  it("defaults to 50,000 per 24 hours and validates the setting", async () => {
-    expect(DEFAULT_BROADCAST_DAILY_LIMIT).toBe(50_000);
-    expect(await getBroadcastDailyLimit(env.DB)).toBe(50_000);
+  it("defaults to 900 per 24 hours and validates the setting", async () => {
+    expect(DEFAULT_BROADCAST_DAILY_LIMIT).toBe(900);
+    expect(await getBroadcastDailyLimit(env.DB)).toBe(900);
     await setBroadcastDailyLimit(env.DB, parseBroadcastDailyLimit("1,500"));
     expect(await getBroadcastDailyLimit(env.DB)).toBe(1_500);
     for (const invalid of ["0", "-5", "2.5", "abc", "", "10000001"]) expect(() => parseBroadcastDailyLimit(invalid)).toThrow();

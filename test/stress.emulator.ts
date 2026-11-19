@@ -1,5 +1,6 @@
 import { applyD1Migrations, createExecutionContext, createMessageBatch, env, getQueueResult, SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
+import { setBroadcastDailyLimit } from "../src/broadcast-budget";
 import { enqueueBroadcast, processBroadcastQueueMessage } from "../src/delivery";
 import type { BroadcastQueueMessage, DeliveryQueueMessage } from "../src/types";
 import worker from "../src/index";
@@ -9,6 +10,8 @@ const NOW = "2026-10-07T00:00:00.000Z";
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
+  // Measures fan-out capacity, so the 24-hour broadcast limit must not pace it.
+  await setBroadcastDailyLimit(env.DB, CONTACT_COUNT);
   await env.DB.batch([
     env.DB.prepare("INSERT INTO segments (id,name,created_at,updated_at) VALUES ('stress-segment','50k stress audience',?,?)").bind(NOW, NOW),
     env.DB.prepare("INSERT INTO domains (id,name,created_at) VALUES ('stress-domain','example.com',?)").bind(NOW),
