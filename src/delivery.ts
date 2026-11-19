@@ -70,7 +70,7 @@ export async function enqueueBroadcast(env: Env, broadcastId: string): Promise<n
 }
 
 export async function processBroadcastQueueMessage(message: Message<BroadcastQueueMessage>, env: Env): Promise<void> {
-  const job = message.body;
+  let job = message.body;
   const broadcast = await env.DB.prepare("SELECT segment_id,topic_id,status FROM broadcasts WHERE id = ?")
     .bind(job.broadcastId).first<Pick<BroadcastRow, "segment_id" | "topic_id" | "status">>();
   if (!broadcast || broadcast.status !== "queueing") {
@@ -78,34 +78,8 @@ export async function processBroadcastQueueMessage(message: Message<BroadcastQue
     return;
   }
 
-  const pending = await env.DB.prepare(
-    "SELECT id FROM deliveries WHERE broadcast_id = ? AND status = 'pending' ORDER BY id LIMIT ?",
-  ).bind(job.broadcastId, DELIVERY_FANOUT_BATCH_SIZE).all<{ id: string }>();
-  if (pending.results.length > 0) {
-    // Broadcasts share one 24-hour send budget and are served first come, first served.
-    if (await hasEarlierQueuedBroadcast(env.DB, job.broadcastId)) {
-      const budget = await getBroadcastBudget(env.DB);
-      await deferBroadcastFanout(env, message, budget.exhausted ? budget.resetsAt : null);
-      return;
-    }
-    const { granted, budget } = await reserveBroadcastSends(env.DB, pending.results.length, await getBroadcastDailyLimit(env.DB));
-    if (granted === 0) {
-      await deferBroadcastFanout(env, message, budget.resetsAt);
-      return;
-    }
-    const batch = pending.results.slice(0, granted);
-    await env.DELIVERY_QUEUE.sendBatch([
-      ...batch.map(({ id }) => ({ body: { deliveryId: id } satisfies DeliveryQueueMessage })),
-      { body: { ...job } satisfies BroadcastQueueMessage },
-    ]);
-    const placeholders = batch.map(() => "?").join(",");
-    await env.DB.prepare(
-      `UPDATE deliveries SET status = 'enqueued', updated_at = ? WHERE status = 'pending' AND id IN (${placeholders})`,
-    ).bind(nowIso(), ...batch.map(({ id }) => id)).run();
-    message.ack();
-    return;
-  }
-
+  // Create every recipient row before sending any, so the full audience is visible while the
+  // 24-hour limit paces delivery. Each step inserts a bounded chunk and re-queues itself.
   if (job.createDeliveries) {
     const afterContactId = job.afterContactId ?? "";
     const next = await env.DB.prepare(
@@ -142,6 +116,36 @@ export async function processBroadcastQueueMessage(message: Message<BroadcastQue
       message.ack();
       return;
     }
+    // Every recipient row exists now; from here on the job only paces sending.
+    job = { type: job.type, broadcastId: job.broadcastId, createDeliveries: false, queuedAt: job.queuedAt };
+  }
+
+  const pending = await env.DB.prepare(
+    "SELECT id FROM deliveries WHERE broadcast_id = ? AND status = 'pending' ORDER BY id LIMIT ?",
+  ).bind(job.broadcastId, DELIVERY_FANOUT_BATCH_SIZE).all<{ id: string }>();
+  if (pending.results.length > 0) {
+    // Broadcasts share one 24-hour send budget and are served first come, first served.
+    if (await hasEarlierQueuedBroadcast(env.DB, job.broadcastId)) {
+      const budget = await getBroadcastBudget(env.DB);
+      await deferBroadcastFanout(env, message, job, budget.exhausted ? budget.resetsAt : null);
+      return;
+    }
+    const { granted, budget } = await reserveBroadcastSends(env.DB, pending.results.length, await getBroadcastDailyLimit(env.DB));
+    if (granted === 0) {
+      await deferBroadcastFanout(env, message, job, budget.resetsAt);
+      return;
+    }
+    const batch = pending.results.slice(0, granted);
+    await env.DELIVERY_QUEUE.sendBatch([
+      ...batch.map(({ id }) => ({ body: { deliveryId: id } satisfies DeliveryQueueMessage })),
+      { body: { ...job } satisfies BroadcastQueueMessage },
+    ]);
+    const placeholders = batch.map(() => "?").join(",");
+    await env.DB.prepare(
+      `UPDATE deliveries SET status = 'enqueued', updated_at = ? WHERE status = 'pending' AND id IN (${placeholders})`,
+    ).bind(nowIso(), ...batch.map(({ id }) => id)).run();
+    message.ack();
+    return;
   }
 
   await env.DB.prepare("UPDATE broadcasts SET status = 'queued', updated_at = ? WHERE id = ? AND status = 'queueing'")
@@ -168,11 +172,11 @@ export async function hasEarlierQueuedBroadcast(db: D1Database, broadcastId: str
 }
 
 /** Re-queues the coordinator to try again at `resumeAt` (the budget reset) or after a short poll. */
-async function deferBroadcastFanout(env: Env, message: Message<BroadcastQueueMessage>, resumeAt: string | null): Promise<void> {
+async function deferBroadcastFanout(env: Env, message: Message<BroadcastQueueMessage>, job: BroadcastQueueMessage, resumeAt: string | null): Promise<void> {
   const delaySeconds = resumeAt
     ? Math.min(MAX_QUEUE_DELAY_SECONDS, Math.max(1, Math.ceil((Date.parse(resumeAt) - Date.now()) / 1000) + 5))
     : QUEUE_ORDER_POLL_SECONDS;
-  await env.DELIVERY_QUEUE.send({ ...message.body } satisfies BroadcastQueueMessage, { delaySeconds });
+  await env.DELIVERY_QUEUE.send({ ...job } satisfies BroadcastQueueMessage, { delaySeconds });
   message.ack();
 }
 
