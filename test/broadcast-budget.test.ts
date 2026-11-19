@@ -56,7 +56,7 @@ describe("broadcast send budget", () => {
 });
 
 describe("broadcast fan-out pacing", () => {
-  type Sent = { batch: DeliveryQueueMessage[]; single: { body: BroadcastQueueMessage; delaySeconds?: number }[] };
+  type Sent = { batch: DeliveryQueueMessage[]; single: { body: BroadcastQueueMessage; delaySeconds?: number }[]; next?: BroadcastQueueMessage };
 
   async function seedBroadcast(id: string, recipients: number, queuedAt: string): Promise<void> {
     await env.DB.batch([
@@ -69,16 +69,15 @@ describe("broadcast fan-out pacing", () => {
     ]);
   }
 
-  async function runCoordinator(broadcastId: string): Promise<Sent> {
+  async function runCoordinator(broadcastId: string, job: BroadcastQueueMessage = { type: "broadcast_fanout", broadcastId, createDeliveries: false, queuedAt: now }): Promise<Sent> {
     const sent: Sent = { batch: [], single: [] };
     const queue = {
       sendBatch: async (messages: { body: DeliveryQueueMessage | BroadcastQueueMessage }[]) => {
-        for (const { body } of messages) if ("deliveryId" in body) sent.batch.push(body);
+        for (const { body } of messages) if ("deliveryId" in body) sent.batch.push(body); else sent.next = body;
       },
-      send: async (body: BroadcastQueueMessage, options?: { delaySeconds?: number }) => { sent.single.push({ body, delaySeconds: options?.delaySeconds }); },
+      send: async (body: BroadcastQueueMessage, options?: { delaySeconds?: number }) => { sent.single.push({ body, delaySeconds: options?.delaySeconds }); sent.next = body; },
     };
     const queueEnv = new Proxy(env, { get: (target, key, receiver) => key === "DELIVERY_QUEUE" ? queue : Reflect.get(target, key, receiver) });
-    const job: BroadcastQueueMessage = { type: "broadcast_fanout", broadcastId, createDeliveries: false, queuedAt: now };
     const batch = createMessageBatch<BroadcastQueueMessage>("open-resend-deliveries", [{ id: "job", timestamp: new Date(), attempts: 1, body: job }]);
     await processBroadcastQueueMessage(batch.messages[0]!, queueEnv);
     return sent;
@@ -103,6 +102,38 @@ describe("broadcast fan-out pacing", () => {
     expect(blocked.single[0]!.delaySeconds).toBe(12 * 60 * 60);
     expect(await countStatus("first", "pending")).toBe(2);
     expect((await env.DB.prepare("SELECT status FROM broadcasts WHERE id='first'").first("status"))).toBe("queueing");
+  });
+
+  it("creates every recipient row up front, even when the limit pauses sending", async () => {
+    const audience = 1_500; // More than one 1,000-row creation step.
+    await setBroadcastDailyLimit(env.DB, 450);
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO domains (id,name,created_at) VALUES ('bb-domain','example.com',?)").bind(now),
+      env.DB.prepare("INSERT INTO senders (id,domain_id,email,name,postal_address,created_at,updated_at) VALUES ('bb-sender','bb-domain','news@example.com','News','1 Main Street',?,?)").bind(now, now),
+      env.DB.prepare("INSERT INTO segments (id,name,created_at,updated_at) VALUES ('bb-segment','Readers',?,?)").bind(now, now),
+      env.DB.prepare("INSERT INTO broadcasts (id,name,segment_id,sender_id,from_value,subject,html,status,queued_at,created_at,updated_at) VALUES ('big','big','bb-segment','bb-sender','news@example.com','News','<p>Hi</p>','queueing',?,?,?)").bind(now, now, now),
+    ]);
+    for (let offset = 0; offset < audience; offset += 250) {
+      await env.DB.batch(Array.from({ length: Math.min(250, audience - offset) }, (_, i) => {
+        const id = `contact-${String(offset + i).padStart(5, "0")}`;
+        return env.DB.prepare("INSERT INTO contacts (id,email,created_at,updated_at) VALUES (?,?,?,?)").bind(id, `${id}@example.net`, now, now);
+      }));
+      await env.DB.prepare("INSERT INTO segment_contacts (segment_id,contact_id,status,subscribed_at,updated_at) SELECT 'bb-segment', id, 'subscribed', ?, ? FROM contacts WHERE id NOT IN (SELECT contact_id FROM segment_contacts)").bind(now, now).run();
+    }
+
+    let job: BroadcastQueueMessage | undefined = { type: "broadcast_fanout", broadcastId: "big", createDeliveries: true, queuedAt: now };
+    let paused = false;
+    for (let step = 0; job && !paused && step < 50; step++) {
+      const sent = await runCoordinator("big", job);
+      paused = sent.single.some(({ delaySeconds }) => (delaySeconds ?? 0) > 60);
+      job = sent.next;
+    }
+    expect(paused).toBe(true);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM deliveries WHERE broadcast_id='big'").first<number>("n")).toBe(audience);
+    expect(await countStatus("big", "enqueued")).toBe(450);
+    expect(await countStatus("big", "pending")).toBe(audience - 450);
+    // The deferred job only paces sending; it does not create rows again.
+    expect(job?.createDeliveries).toBe(false);
   });
 
   it("serves broadcasts first come, first served", async () => {
