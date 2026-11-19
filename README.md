@@ -41,7 +41,7 @@ Topics are optional. A broadcast with a Topic unsubscribes recipients from that 
 
 ### Broadcast sending limit
 
-**Settings → Broadcast sending limit** caps how many broadcast emails are sent in any 24 hours, shared by all broadcasts. The default is 50,000, so a new installation is effectively unlimited. A 24-hour window starts with the first broadcast email sent after the previous window ends, which matches how Cloudflare Email Sending's daily quota has been observed to reset. Once the limit is reached, remaining recipients stay queued and send automatically when the window resets; broadcasts are served first come, first served, and the broadcast page shows when sending resumes.
+**Settings → Broadcast sending limit** caps how many broadcast emails are sent in any 24 hours, shared by all broadcasts. The default is 900 emails per 24 hours, a conservative starting point for a new Cloudflare Email Sending account; raise it once your account's quota allows. A 24-hour window starts with the first broadcast email sent after the previous window ends, which matches how Cloudflare Email Sending's daily quota has been observed to reset. Once the limit is reached, remaining recipients stay queued and send automatically when the window resets; broadcasts are served first come, first served, and the broadcast page shows when sending resumes.
 
 Only broadcast recipients count. Transactional email and test emails are never limited or counted, but they share Cloudflare's account-wide quota, so set the broadcast limit below your Cloudflare quota with room for other mail. The API reports a paused broadcast as `queued`.
 
