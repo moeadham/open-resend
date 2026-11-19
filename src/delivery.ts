@@ -1,6 +1,7 @@
 import { applyTransactionalProviderEvent } from "./outgoing-email";
 import { EmailMessage } from "cloudflare:email";
 import { createMimeMessage, Mailbox } from "mimetext/browser";
+import { getBroadcastBudget, getBroadcastDailyLimit, reserveBroadcastSends } from "./broadcast-budget";
 import { EMAIL_IMAGE_ROW_CSS } from "./email-layout";
 import { AppError, escapeHtml, logError, normalizeLineEndings, nowIso, randomToken, sha256, stripHtml, unsubscribeBaseUrl } from "./lib";
 import type { BroadcastQueueMessage, BroadcastRow, DeliveryDetail, DeliveryQueueMessage, EmailEventMessage } from "./types";
@@ -24,9 +25,9 @@ export async function enqueueBroadcast(env: Env, broadcastId: string): Promise<n
 
   const now = nowIso();
   const claimed = await env.DB.prepare(
-    `UPDATE broadcasts SET status = 'queueing', updated_at = ?
+    `UPDATE broadcasts SET status = 'queueing', queued_at = ?, updated_at = ?
      WHERE id = ? AND status IN ('draft', 'scheduled')`,
-  ).bind(now, broadcastId).run();
+  ).bind(now, now, broadcastId).run();
   if (!claimed.meta.changes) {
     const existing = await env.DB.prepare("SELECT COUNT(*) AS count FROM deliveries WHERE broadcast_id = ?")
       .bind(broadcastId).first<{ count: number }>();
@@ -81,14 +82,26 @@ export async function processBroadcastQueueMessage(message: Message<BroadcastQue
     "SELECT id FROM deliveries WHERE broadcast_id = ? AND status = 'pending' ORDER BY id LIMIT ?",
   ).bind(job.broadcastId, DELIVERY_FANOUT_BATCH_SIZE).all<{ id: string }>();
   if (pending.results.length > 0) {
+    // Broadcasts share one 24-hour send budget and are served first come, first served.
+    if (await hasEarlierQueuedBroadcast(env.DB, job.broadcastId)) {
+      const budget = await getBroadcastBudget(env.DB);
+      await deferBroadcastFanout(env, message, budget.exhausted ? budget.resetsAt : null);
+      return;
+    }
+    const { granted, budget } = await reserveBroadcastSends(env.DB, pending.results.length, await getBroadcastDailyLimit(env.DB));
+    if (granted === 0) {
+      await deferBroadcastFanout(env, message, budget.resetsAt);
+      return;
+    }
+    const batch = pending.results.slice(0, granted);
     await env.DELIVERY_QUEUE.sendBatch([
-      ...pending.results.map(({ id }) => ({ body: { deliveryId: id } satisfies DeliveryQueueMessage })),
+      ...batch.map(({ id }) => ({ body: { deliveryId: id } satisfies DeliveryQueueMessage })),
       { body: { ...job } satisfies BroadcastQueueMessage },
     ]);
-    const placeholders = pending.results.map(() => "?").join(",");
+    const placeholders = batch.map(() => "?").join(",");
     await env.DB.prepare(
       `UPDATE deliveries SET status = 'enqueued', updated_at = ? WHERE status = 'pending' AND id IN (${placeholders})`,
-    ).bind(nowIso(), ...pending.results.map(({ id }) => id)).run();
+    ).bind(nowIso(), ...batch.map(({ id }) => id)).run();
     message.ack();
     return;
   }
@@ -134,6 +147,32 @@ export async function processBroadcastQueueMessage(message: Message<BroadcastQue
   await env.DB.prepare("UPDATE broadcasts SET status = 'queued', updated_at = ? WHERE id = ? AND status = 'queueing'")
     .bind(nowIso(), job.broadcastId).run();
   await finishBroadcastIfComplete(env.DB, job.broadcastId);
+  message.ack();
+}
+
+/** Cloudflare Queues accepts message delays of up to 12 hours. */
+const MAX_QUEUE_DELAY_SECONDS = 12 * 60 * 60;
+/** How often a broadcast waiting behind an earlier one checks whether it may proceed. */
+const QUEUE_ORDER_POLL_SECONDS = 30;
+
+/** True when an earlier-queued broadcast still has recipients waiting to be handed to the queue. */
+export async function hasEarlierQueuedBroadcast(db: D1Database, broadcastId: string): Promise<boolean> {
+  const earlier = await db.prepare(
+    `SELECT 1 FROM broadcasts b, broadcasts me
+     WHERE me.id = ?1 AND b.id <> me.id AND b.status = 'queueing'
+       AND (COALESCE(b.queued_at, b.updated_at), b.id) < (COALESCE(me.queued_at, me.updated_at), me.id)
+       AND EXISTS (SELECT 1 FROM deliveries d WHERE d.broadcast_id = b.id AND d.status = 'pending')
+     LIMIT 1`,
+  ).bind(broadcastId).first();
+  return earlier !== null;
+}
+
+/** Re-queues the coordinator to try again at `resumeAt` (the budget reset) or after a short poll. */
+async function deferBroadcastFanout(env: Env, message: Message<BroadcastQueueMessage>, resumeAt: string | null): Promise<void> {
+  const delaySeconds = resumeAt
+    ? Math.min(MAX_QUEUE_DELAY_SECONDS, Math.max(1, Math.ceil((Date.parse(resumeAt) - Date.now()) / 1000) + 5))
+    : QUEUE_ORDER_POLL_SECONDS;
+  await env.DELIVERY_QUEUE.send({ ...message.body } satisfies BroadcastQueueMessage, { delaySeconds });
   message.ack();
 }
 
@@ -457,8 +496,8 @@ export async function retryFailedDeliveries(env: Env, broadcastId: string): Prom
   const total = Number(count?.count ?? 0);
   if (!total) return 0;
   const previous = await env.DB.prepare("SELECT status FROM broadcasts WHERE id = ?").bind(broadcastId).first<{ status: string }>();
-  await env.DB.prepare("UPDATE broadcasts SET status = 'queueing', sent_at = NULL, updated_at = ? WHERE id = ?")
-    .bind(nowIso(), broadcastId).run();
+  await env.DB.prepare("UPDATE broadcasts SET status = 'queueing', queued_at = ?, sent_at = NULL, updated_at = ? WHERE id = ?")
+    .bind(now, now, broadcastId).run();
   try {
     await env.DELIVERY_QUEUE.send({
       type: "broadcast_fanout",

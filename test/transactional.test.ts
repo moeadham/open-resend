@@ -13,6 +13,7 @@ import worker from "../src/index";
 import { apiApp } from "../src/api";
 import { adminApp } from "../src/admin";
 import { sha256, nowIso } from "../src/lib";
+import { getBroadcastBudget, reserveBroadcastSends, setBroadcastDailyLimit } from "../src/broadcast-budget";
 import type { QueueBody } from "../src/types";
 
 vi.mock("node:dns/promises", () => ({
@@ -221,6 +222,9 @@ describe("transactional Resend SDK contract", () => {
     expect(
       new Uint8Array(parsed.attachments[1]!.content as ArrayBuffer),
     ).toEqual(new Uint8Array([255, 0, 1]));
+    // The broadcast limit never applies to transactional email, even when it is exhausted.
+    await setBroadcastDailyLimit(env.DB, 1);
+    await reserveBroadcastSends(env.DB, 1, 1);
     const send = vi.fn(async () => ({ messageId: "provider-contract" }));
     const sendingEnv = new Proxy(env, {
       get(target, property, receiver) {
@@ -244,6 +248,7 @@ describe("transactional Resend SDK contract", () => {
     expect((await resend.emails.get(result.data!.id)).data?.last_event).toBe(
       "sent",
     );
+    expect((await getBroadcastBudget(env.DB)).used).toBe(1);
   });
   it("rejects unauthenticated sends, unverified domains and unsupported scheduling", async () => {
     const response = await apiApp.request(
