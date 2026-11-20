@@ -3,6 +3,7 @@ import { EmailMessage } from "cloudflare:email";
 import { createMimeMessage, Mailbox } from "mimetext/browser";
 import { getBroadcastBudget, getBroadcastDailyLimit, reserveBroadcastSends } from "./broadcast-budget";
 import { EMAIL_IMAGE_ROW_CSS } from "./email-layout";
+import { recordSuppression } from "./suppressions";
 import { AppError, escapeHtml, logError, normalizeLineEndings, nowIso, randomToken, sha256, stripHtml, unsubscribeBaseUrl } from "./lib";
 import type { BroadcastQueueMessage, BroadcastRow, DeliveryDetail, DeliveryQueueMessage, EmailEventMessage } from "./types";
 
@@ -408,11 +409,12 @@ export async function processEmailEvent(message: Message<EmailEventMessage>, env
     ).bind(status, reason, nowIso(), messageId, status).first<{ broadcast_id: string }>();
     if (updated) await finishBroadcastIfComplete(env.DB, updated.broadcast_id);
 
+    // Hard bounces and complaints from any email (broadcast or transactional) join the account-wide
+    // suppression list; triggers mirror it onto the matching contact.
     if (status === "complained" || (status === "bounced" && event.payload.bounce?.type === "hard")) {
-      await env.DB.prepare(
-        `UPDATE contacts SET suppression_reason = ?, updated_at = ?
-         WHERE id = (SELECT contact_id FROM deliveries WHERE message_id = ?)`,
-      ).bind(status, nowIso(), messageId).run();
+      const recipient = event.payload.recipient
+        ?? await env.DB.prepare("SELECT recipient FROM deliveries WHERE message_id = ?").bind(messageId).first<string>("recipient");
+      if (recipient) await recordSuppression(env.DB, recipient, status === "complained" ? "complaint" : "bounce", reason);
     }
   }
   message.ack();

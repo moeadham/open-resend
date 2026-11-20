@@ -24,6 +24,7 @@ import {
 } from "./webhooks";
 import { receivingAdmin } from "./receiving-domains";
 import { getEmailRetentionDays } from "./settings";
+import { EmailTabs } from "./suppressions-admin";
 
 export const transactionalAdmin = new Hono<{ Bindings: Env }>();
 transactionalAdmin.route("/receiving-domains", receivingAdmin);
@@ -77,20 +78,7 @@ transactionalAdmin.get("/emails", async (c) => {
         {retentionDays === 1 ? "day" : "days"}.{" "}
         <a href="/settings">Change retention</a>
       </p>
-      <div class="tabs">
-        <a
-          class={`tab ${direction === "sending" ? "active" : ""}`}
-          href="/emails"
-        >
-          Sending
-        </a>
-        <a
-          class={`tab ${direction === "receiving" ? "active" : ""}`}
-          href="/emails?direction=receiving"
-        >
-          Receiving
-        </a>
-      </div>
+      <EmailTabs active={direction} />
       <form class="toolbar" method="get">
         <input type="hidden" name="direction" value={direction} />
         <input

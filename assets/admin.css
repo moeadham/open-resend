@@ -521,3 +521,14 @@ button[aria-busy="true"]::after { content: ""; @apply ml-2 inline-block size-3.5
 .toast[data-leaving="true"] { opacity: 0; transform: translateY(6px); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
 @media (prefers-reduced-motion: reduce) { button[aria-busy="true"]::after, .toast { animation: none; } }
+
+/* Suppression list */
+.suppression-notice { @apply border-destructive/30 bg-destructive-soft; }
+.suppression-notice strong { @apply text-destructive; }
+.suppression-notice p { @apply mb-2 mt-1 text-sm; overflow-wrap: anywhere; }
+.suppression-notice a { @apply text-sm; }
+.detail-list { @apply m-0 mb-5 grid gap-0; }
+.detail-list > div { @apply grid grid-cols-[7rem_minmax(0,1fr)] gap-3 border-b border-border-subtle py-3 text-sm; }
+.detail-list dt { @apply text-foreground-soft; }
+.detail-list dd { @apply m-0 min-w-0; overflow-wrap: anywhere; }
+.suppression-reason { @apply m-0 whitespace-pre-wrap rounded-lg border border-border-subtle bg-background-subtle p-3 font-mono text-xs; overflow-wrap: anywhere; }
