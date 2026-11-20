@@ -39,6 +39,12 @@ A self-hosted Resend-compatible email service built entirely on Cloudflare. Open
 
 Topics are optional. A broadcast with a Topic unsubscribes recipients from that Topic; a broadcast without one uses global unsubscribe.
 
+### Suppressions
+
+**Emails → Suppressions** lists every suppressed address with its origin (**Bounce**, **Complaint**, or **Manual**), the date it was added, and the provider's reason. Hard bounces and spam complaints from any email, broadcast or transactional, add the address automatically; soft bounces such as a full mailbox do not. Suppressions apply to the whole installation: every broadcast skips a suppressed address, in every segment.
+
+As in Resend, suppression does not remove or unsubscribe contacts. A suppressed contact keeps its segments and topics, shows as **Suppressed** in Audience, and links to its suppression. Removing an address from the list lets broadcasts reach it again; if it bounces or complains again, it is suppressed again. Contacts created later with a suppressed address are suppressed immediately. Transactional sends are not blocked by this list; Cloudflare Email Sending applies its own account suppression list to them.
+
 ### Broadcast sending limit
 
 **Settings → Broadcast sending limit** caps how many broadcast emails are sent in any 24 hours, shared by all broadcasts. The default is 900 emails per 24 hours, a conservative starting point for a new Cloudflare Email Sending account; raise it once your account's quota allows. A 24-hour window starts with the first broadcast email sent after the previous window ends, which matches how Cloudflare Email Sending's daily quota has been observed to reset. Once the limit is reached, remaining recipients stay queued and send automatically when the window resets; broadcasts are served first come, first served, and the broadcast page shows when sending resumes.
@@ -364,7 +370,7 @@ The following Resend client namespaces or operations are not implemented and rem
 - `resend.domains` and domain claims. Domains are onboarded in Cloudflare Email Sending and synchronized into the admin.
 - `resend.events`, `resend.logs`, and `resend.usage`.
 - `resend.oauthGrants`.
-- `resend.suppressions`, including batch suppression management. Open Resend creates suppressions from hard bounces and complaints but does not expose the matching SDK routes.
+- `resend.suppressions`, including batch suppression management. Open Resend keeps a suppression list (see **Suppressions** below) and manages it in the admin, but does not expose the matching SDK routes or `suppression.*` webhook events.
 - `resend.templates`.
 - Resend's standalone events/logs API for webhook attempts. Open Resend exposes delivery attempts and Replay through the protected admin instead.
 

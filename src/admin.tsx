@@ -1,4 +1,6 @@
 import { transactionalAdmin } from "./transactional-admin";
+import { ORIGIN_LABELS, suppressionsAdmin } from "./suppressions-admin";
+import { getSuppressionForEmail } from "./suppressions";
 import { Hono, type Context } from "hono";
 import type { Child } from "hono/jsx";
 import { requireAccess, requireSameOrigin } from "./auth";
@@ -29,6 +31,8 @@ adminApp.onError((error, c) => {
 });
 adminApp.use("*", requireAccess);
 adminApp.use("*", requireSameOrigin);
+// Mounted before transactionalAdmin so /emails/suppressions is not captured by /emails/:id.
+adminApp.route("/", suppressionsAdmin);
 adminApp.route("/", transactionalAdmin);
 adminApp.route("/editor/images", imagesApp);
 adminApp.get("/assets/*", (c) => c.env.ASSETS.fetch(c.req.raw));
@@ -170,8 +174,9 @@ adminApp.get("/contacts/:id", async (c) => {
   if (!contact) throw new AppError(404, "not_found", "Contact not found.");
   const displayName = [contact.first_name, contact.last_name].filter(Boolean).join(" ");
   const status = contact.suppression_reason ? "Suppressed" : contact.unsubscribed ? "Globally unsubscribed" : "Globally subscribed";
+  const suppression = contact.suppression_reason ? await getSuppressionForEmail(c.env.DB, contact.email) : null;
   return c.html(<Layout title="Audience contact"><div class="detail-head"><div><a class="crumb" href="/audience">← Audience</a><h1>{displayName || contact.email}</h1><p class="muted">{displayName ? contact.email : "Contact details and email preferences"}</p></div><div class="actions"><span class={`badge ${status === "Globally subscribed" ? "good" : "bad"}`}>{status}</span><ActionMenu id={`contact-detail-${contact.id}`}><CopyIdMenuItem id={contact.id}/></ActionMenu></div></div>
-    {contact.suppression_reason && <div class="panel error"><strong>Globally suppressed</strong><p>{contact.suppression_reason}</p></div>}
+    {contact.suppression_reason && <div class="panel suppression-notice" role="status"><strong>On the suppression list{suppression ? ` (${ORIGIN_LABELS[suppression.origin]})` : ""}</strong><p>Broadcasts skip this address. Its segments and topics are unchanged.{suppression?.details ? ` Reason: ${suppression.details}` : ""}</p>{suppression && <a href={`/emails/suppressions/${suppression.id}`}>View suppression →</a>}</div>}
     <div class="detail-grid"><section class="panel"><h2 class="section-title">Contact details</h2><form method="post" action={`/contacts/${contact.id}`}><label>Email</label><input name="email" type="email" value={contact.email} required/><div class="form-grid"><div><label>First name</label><input name="first_name" value={contact.first_name ?? ""}/></div><div><label>Last name</label><input name="last_name" value={contact.last_name ?? ""}/></div></div><div class="actions form-actions"><button class="primary">Save contact</button></div></form></section>
       <section class="panel"><h2 class="section-title">Global subscription</h2><p class="muted">This setting applies across every segment. Hard bounces and complaints remain suppressed.</p><form method="post" action={`/contacts/${contact.id}/subscription`} data-success={contact.unsubscribed ? "Contact globally resubscribed." : "Contact globally unsubscribed."}><input type="hidden" name="subscribed" value={contact.unsubscribed ? "true" : "false"}/><button class={contact.unsubscribed ? "primary" : "danger"}>{contact.unsubscribed ? "Globally resubscribe" : "Globally unsubscribe"}</button></form></section></div>
     <section class="panel contact-memberships"><div class="section-head"><div><h2 class="section-title">Segments</h2><p class="muted">Segments are internal recipient groups. Membership determines which broadcasts target this contact.</p></div>{segments.results.length > 0 && <form method="post" action={`/contacts/${contact.id}/segments`} class="inline-form segment-add" data-success="Contact added to segment." data-require-field="segment_id" data-require-message="Choose a segment first."><SearchableCombobox name="segment_id" placeholder="Select segment…" searchPlaceholder="Search segments…" items={segments.results.map((segment) => ({ value: segment.id, label: segment.name }))}/><button class="primary">Add</button></form>}</div>
@@ -512,7 +517,7 @@ async function apiKeysPage(c: AdminContext, createdKey?: string) {
 }
 
 export function Layout({ title, children }: { title: string; children: Child }) {
-  const active = title === "Emails" ? "emails" : title === "Settings" ? "settings" : title === "Webhooks" ? "webhooks" : title.toLowerCase().includes("broadcast") ? "broadcasts" : title.toLowerCase().includes("audience") ? "audience" : title.toLowerCase().includes("domain") || title.toLowerCase().includes("sender") ? "domains" : title.toLowerCase().includes("api key") ? "keys" : "";
+  const active = title === "Emails" || title.startsWith("Suppression") ? "emails" : title === "Settings" ? "settings" : title === "Webhooks" ? "webhooks" : title.toLowerCase().includes("broadcast") ? "broadcasts" : title.toLowerCase().includes("audience") ? "audience" : title.toLowerCase().includes("domain") || title.toLowerCase().includes("sender") ? "domains" : title.toLowerCase().includes("api key") ? "keys" : "";
   return <html lang="en" class="dark"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>{title} · Open Re-send</title><link rel="stylesheet" href="/assets/admin.css"/></head><body><div class="app-shell"><aside class="sidebar"><a class="workspace" href="/broadcasts"><span class="workspace-mark">OR</span><span>Open Re-send</span></a><nav class="side-nav"><NavLink href="/emails" icon={<AudienceIcon class="size-4"/>} label="Emails" active={active === "emails"}/><NavLink href="/webhooks" icon={<BroadcastIcon class="size-4"/>} label="Webhooks" active={active === "webhooks"}/><NavLink href="/broadcasts" icon={<BroadcastIcon class="size-4"/>} label="Broadcasts" active={active === "broadcasts"}/><NavLink href="/audience" icon={<AudienceIcon class="size-4"/>} label="Audience" active={active === "audience"}/><NavLink href="/senders" icon={<DomainIcon class="size-4"/>} label="Domains" active={active === "domains"}/><NavLink href="/api-keys" icon={<KeyIcon class="size-4"/>} label="API keys" active={active === "keys"}/><NavLink href="/settings" icon={<SettingsIcon class="size-4"/>} label="Settings" active={active === "settings"}/></nav><div class="side-foot">Protected by Cloudflare Access</div></aside><main class="main"><div class="content">{children}</div></main></div><script type="module" src="/assets/admin.js"></script></body></html>;
 }
 function NavLink({ href, icon, label, active }: { href: string; icon: Child; label: string; active: boolean }) { return <a class={`side-link ${active ? "active" : ""}`} href={href}><span class="nav-icon">{icon}</span><span>{label}</span></a>; }
